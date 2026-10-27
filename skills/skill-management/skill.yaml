@@ -1,0 +1,48 @@
+name: "skill-management"
+version: "1.1.0"
+description: "技能管理：validate/list/run/deps + 交互式过滤选择"
+author: "AIAOS Project"
+license: "MIT"
+keywords: ["skill", "manage", "validate", "list", "run", "deps", "filter", "select"]
+
+dependencies:
+  core: ">=1.0.0"
+  skills: []
+  system:
+    - "emacs>=29"
+
+commands:
+  - name: "validate"
+    entry: "commands/validate.el"
+    description: "校验技能元数据完整性"
+    args: [":name"]
+    options: []
+  - name: "list"
+    entry: "commands/list.el"
+    description: "列出所有已安装技能"
+    args: [":skills-dir"]
+    options: []
+  - name: "run"
+    entry: "commands/run.el"
+    description: "以进程内方式运行目标技能命令"
+    args: [":name", ":command", ":args"]
+    options: []
+  - name: "deps"
+    entry: "commands/deps.el"
+    description: "解析技能依赖（拓扑排序+循环检测）"
+    args: [":name"]
+    options: []
+  - name: "filter_select"
+    entry: "commands/skill_filter_select_callback.el"
+    description: "交互式技能过滤和选择（键盘导航）"
+    args: []
+    options: []
+
+hooks:
+  on-load: "hooks/on-load.el"
+  pre-command: "hooks/pre-command.el"
+  post-command: "hooks/post-command.el"
+
+resources:
+  templates: []
+  schemas: []

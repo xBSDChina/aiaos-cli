@@ -1,0 +1,47 @@
+author: AIAOS Project
+commands:
+- args:
+  - description: 被问候的名字
+    name: name
+    required: true
+    type: string
+  description: 向指定名字问候
+  entry: commands/hello.el
+  name: hello
+  options:
+  - default: Hello
+    description: 问候语前缀
+    name: --greeting
+    short: -g
+    type: string
+- args: []
+  description: 返回当前时间戳
+  entry: commands/time.el
+  name: time
+  options:
+  - default: iso
+    description: 输出格式 (iso|epoch)
+    name: --format
+    short: -f
+    type: string
+dependencies:
+  core: '>=1.0.0'
+  skills: []
+  system:
+  - emacs>=29
+description: AIAOS-CLI 示例技能包：演示技能加载、命令注册、钩子机制
+disabled: false
+hooks:
+  on-load: hooks/on-load.el
+  post-command: hooks/post-command.el
+  pre-command: hooks/pre-command.el
+keywords:
+- example
+- tutorial
+- demo
+license: MIT
+name: hello-world
+resources:
+  schemas: []
+  templates: []
+version: 1.0.0

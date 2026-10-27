@@ -1,0 +1,50 @@
+name: "date-tools"
+version: "1.0.0"
+description: "AIAOS-CLI 日期时间工具技能包：当前时间、时间戳转换、日期加减"
+author: "AIAOS Project"
+license: "MIT"
+keywords: ["date", "time", "datetime", "timestamp", "productivity"]
+
+dependencies:
+  core: ">=1.0.0"
+  skills: []
+  system:
+    - "emacs>=29"
+
+commands:
+  - name: "now"
+    entry: "commands/now.el"
+    description: "返回当前日期时间，支持多种格式"
+    args:
+      - name: "format"
+        type: "string"
+        required: false
+        description: "格式字符串（默认 ISO 8601）"
+  - name: "timestamp"
+    entry: "commands/timestamp.el"
+    description: "Unix 时间戳与日期互转"
+    args:
+      - name: "value"
+        type: "string"
+        required: false
+        description: "时间戳或日期字符串"
+      - name: "direction"
+        type: "string"
+        required: false
+        description: "to-unix | to-date（默认自动判断）"
+  - name: "add"
+    entry: "commands/add.el"
+    description: "日期加减运算"
+    args:
+      - name: "date"
+        type: "string"
+        required: true
+        description: "基准日期 (YYYY-MM-DD)"
+      - name: "days"
+        type: "integer"
+        required: false
+        description: "加/减天数"
+      - name: "months"
+        type: "integer"
+        required: false
+        description: "加/减月数"

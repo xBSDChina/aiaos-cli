@@ -1,0 +1,109 @@
+name: "emacs-tools"
+version: "1.2.0"
+description: "AIAOS-CLI Emacs 文本处理技能包：编码、格式化、词频、字符统计、URL slug（含Unicode支持）"
+author: "AIAOS Project"
+license: "MIT"
+keywords: ["emacs", "text", "encoding", "productivity", "slug", "unicode"]
+
+dependencies:
+  core: ">=1.0.0"
+  skills: []
+  system:
+    - "emacs>=29"
+
+commands:
+  - name: "encode"
+    entry: "commands/encode.el"
+    description: "Base64/URL 编码或解码字符串"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待处理的字符串"
+    options:
+      - name: "--mode"
+        short: "-m"
+        type: "string"
+        description: "编码模式 (b64|url|b64d|urld)"
+        default: "b64"
+
+  - name: "format"
+    entry: "commands/format.el"
+    description: "将文本按指定宽度折行"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待格式化的文本"
+      - name: "width"
+        type: "integer"
+        required: true
+        description: "目标行宽"
+    options:
+      - name: "--indent"
+        short: "-i"
+        type: "integer"
+        description: "续行缩进"
+        default: 0
+
+  - name: "wordfreq"
+    entry: "commands/wordfreq.el"
+    description: "统计文本中词频（返回 top-N）"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待统计的文本"
+    options:
+      - name: "--top"
+        short: "-n"
+        type: "integer"
+        description: "返回前 N 个高频词"
+        default: 10
+
+  - name: "stats"
+    entry: "commands/stats.el"
+    description: "统计文本字符/词/行/字节数"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待统计的文本"
+
+  - name: "slugify"
+    entry: "commands/slugify.el"
+    description: "将任意文本转换为 URL 安全的 slug（小写、分隔符折叠、可截断，支持Unicode）"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待转换的文本"
+    options:
+      - name: "--separator"
+        short: "-s"
+        type: "string"
+        description: "分隔符（默认 '-'）"
+        default: "-"
+      - name: "--truncate"
+        short: "-t"
+        type: "integer"
+        description: "最大长度（可选）"
+      - name: "--unicode"
+        short: "-u"
+        type: "boolean"
+        description: "保留非ASCII字母/数字（中文、日文等）"
+        default: false
+      - name: "--preserve"
+        short: "-p"
+        type: "string"
+        description: "额外保留的字符集（如 '_'）"
+        default: ""
+
+hooks:
+  on-load: "hooks/on-load.el"
+  pre-command: "hooks/pre-command.el"
+  post-command: "hooks/post-command.el"
+
+resources:
+  templates: []
+  schemas: []
