@@ -29,7 +29,7 @@ show_help() {
 示例:
   aiaos-cli agent chat --message "帮我分析这段代码"
   aiaos-cli agent delegate --task "重构用户认证模块" --agent coder
-  aiaos-cli agent tool --name read_file --args '{"path": "main.py"}'
+  aiaos-cli agent tool --tool read_file --args '{"path": "main.py"}'
 EOF
 }
 

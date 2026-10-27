@@ -5,6 +5,7 @@
 # R2109: 并行执行所有测试套件（6 Shell + 1 Elisp = 7 并发）
 # R2300: 新增 Provider 测试套件（7 Shell + 1 Elisp = 8 并发）
 # R3001: 新增集成测试套件（8 Shell + 1 Elisp = 9 并发）
+# R4001: 补全 date-tools + contract 套件注册，修复集成测试聚合丢失，修正 Elisp 硬编码 39→41
 
 set -euo pipefail
 
@@ -51,8 +52,8 @@ run_shell_suite() {
     local rc_file="/tmp/aiaos-runall-${safe}.$$.rc"
     local dur_file="/tmp/aiaos-runall-${safe}.$$.dur"
     local t0=$(date +%s)
-    eval "timeout $timeout_s $cmd" > "$out" 2>&1
-    local rc=$?
+    local rc=0
+    eval "timeout $timeout_s $cmd" > "$out" 2>&1 || rc=$?
     local t1=$(date +%s)
     echo "$rc" > "$rc_file"
     echo "$((t1-t0))" > "$dur_file"
@@ -104,7 +105,7 @@ aggregate_shell() {
 
 main() {
     echo "======================================"
-    echo "AIAOS-CLI 全量测试 (R3001 并行模式)"
+    echo "AIAOS-CLI 全量测试 (R4001 并行模式)"
     echo "======================================"
     echo ""
     log_info "前置检查..."
@@ -113,7 +114,7 @@ main() {
     command -v python3 &>/dev/null || { log_error "Python3 未安装"; exit 1; }
     log_success "前置检查通过"
     echo ""
-    log_info "启动 8 个测试套件（7 Shell + 1 Elisp，并行）..."
+    log_info "启动 10 个测试套件（9 Shell + 1 Elisp，并行）..."
     echo ""
     local start_time=$(date +%s)
 
@@ -123,7 +124,7 @@ main() {
     declare -A TMP_DUR=()
 
     # Launch all Shell suites in background
-    run_shell_suite "Shell CLI 基础" "bash $SCRIPT_DIR/test_cli.sh" 90 &
+    run_shell_suite "Shell CLI 基础" "bash $SCRIPT_DIR/test_cli.sh" 150 &
     PID_OF["Shell CLI 基础"]=$!; TMP_OUT["Shell CLI 基础"]="/tmp/aiaos-runall-Shell_CLI_基础.$$.out"; TMP_RC["Shell CLI 基础"]="/tmp/aiaos-runall-Shell_CLI_基础.$$.rc"; TMP_DUR["Shell CLI 基础"]="/tmp/aiaos-runall-Shell_CLI_基础.$$.dur"
 
     run_shell_suite "文件工具技能" "bash $SCRIPT_DIR/test_file_tools.sh" 90 &
@@ -135,11 +136,17 @@ main() {
     run_shell_suite "文本工具技能" "bash $SCRIPT_DIR/test_text_tools.sh" 90 &
     PID_OF["文本工具技能"]=$!; TMP_OUT["文本工具技能"]="/tmp/aiaos-runall-文本工具技能.$$.out"; TMP_RC["文本工具技能"]="/tmp/aiaos-runall-文本工具技能.$$.rc"; TMP_DUR["文本工具技能"]="/tmp/aiaos-runall-文本工具技能.$$.dur"
 
-    run_shell_suite "Emacs 工具技能" "bash $SCRIPT_DIR/test_emacs_tools.sh" 90 &
+    run_shell_suite "Emacs 工具技能" "bash $SCRIPT_DIR/test_emacs_tools.sh" 120 &
     PID_OF["Emacs 工具技能"]=$!; TMP_OUT["Emacs 工具技能"]="/tmp/aiaos-runall-Emacs_工具技能.$$.out"; TMP_RC["Emacs 工具技能"]="/tmp/aiaos-runall-Emacs_工具技能.$$.rc"; TMP_DUR["Emacs 工具技能"]="/tmp/aiaos-runall-Emacs_工具技能.$$.dur"
 
     run_shell_suite "TUI 组件" "bash $SCRIPT_DIR/test_tui_components.sh" 90 &
     PID_OF["TUI 组件"]=$!; TMP_OUT["TUI 组件"]="/tmp/aiaos-runall-TUI_组件.$$.out"; TMP_RC["TUI 组件"]="/tmp/aiaos-runall-TUI_组件.$$.rc"; TMP_DUR["TUI 组件"]="/tmp/aiaos-runall-TUI_组件.$$.dur"
+
+    run_shell_suite "日期工具技能" "bash $SCRIPT_DIR/test_date_tools.sh" 60 &
+    PID_OF["日期工具技能"]=$!; TMP_OUT["日期工具技能"]="/tmp/aiaos-runall-日期工具技能.$$.out"; TMP_RC["日期工具技能"]="/tmp/aiaos-runall-日期工具技能.$$.rc"; TMP_DUR["日期工具技能"]="/tmp/aiaos-runall-日期工具技能.$$.dur"
+
+    run_shell_suite "契约核对" "bash $SCRIPT_DIR/test-contract.sh" 30 &
+    PID_OF["契约核对"]=$!; TMP_OUT["契约核对"]="/tmp/aiaos-runall-契约核对.$$.out"; TMP_RC["契约核对"]="/tmp/aiaos-runall-契约核对.$$.rc"; TMP_DUR["契约核对"]="/tmp/aiaos-runall-契约核对.$$.dur"
 
     run_shell_suite "Provider 管理" "bash $SCRIPT_DIR/test_provider.sh" 90 &
     PID_OF["Provider 管理"]=$!; TMP_OUT["Provider 管理"]="/tmp/aiaos-runall-Provider_管理.$$.out"; TMP_RC["Provider 管理"]="/tmp/aiaos-runall-Provider_管理.$$.rc"; TMP_DUR["Provider 管理"]="/tmp/aiaos-runall-Provider_管理.$$.dur"
@@ -170,6 +177,12 @@ main() {
     echo ""
     aggregate_shell "Provider 管理" "${TMP_OUT[Provider 管理]}" "${TMP_RC[Provider 管理]}" "${TMP_DUR[Provider 管理]}"
     echo ""
+    aggregate_shell "日期工具技能" "${TMP_OUT[日期工具技能]}" "${TMP_RC[日期工具技能]}" "${TMP_DUR[日期工具技能]}"
+    echo ""
+    aggregate_shell "契约核对" "${TMP_OUT[契约核对]}" "${TMP_RC[契约核对]}" "${TMP_DUR[契约核对]}"
+    echo ""
+    aggregate_shell "集成测试" "${TMP_OUT[集成测试]}" "${TMP_RC[集成测试]}" "${TMP_DUR[集成测试]}"
+    echo ""
     echo "---------------- Elisp 测试 ----------------"
     echo ""
 
@@ -193,12 +206,12 @@ main() {
             log_error "Elisp 单元测试失败: $elisp_passed/$elisp_expected (${elisp_dur}s)"
         fi
     else
-        SUITE_PASS["Elisp 单元测试"]=39
+        SUITE_PASS["Elisp 单元测试"]=41
         SUITE_FAIL["Elisp 单元测试"]=0
         if [[ "$elisp_rc" -eq 0 ]]; then
-            log_success "Elisp 单元测试通过 (39/39, ${elisp_dur}s)"
+            log_success "Elisp 单元测试通过 (41/41, ${elisp_dur}s)"
         else
-            SUITE_FAIL["Elisp 单元测试"]=39
+            SUITE_FAIL["Elisp 单元测试"]=41
             FAILED_SUITES+=("Elisp 单元测试")
             log_error "Elisp 单元测试执行失败 (${elisp_dur}s)"
         fi
