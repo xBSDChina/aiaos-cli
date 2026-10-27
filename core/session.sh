@@ -7,6 +7,22 @@ set -euo pipefail
 SESSION_DIR="${AIAOS_CLI_DATA_DIR}/sessions"
 mkdir -p "$SESSION_DIR"
 
+# 会话写操作全局锁 — 防止多进程并发修改导致数据竞争 (TD-003, R3001)
+SESSION_LOCK_FILE="${SESSION_DIR}/.session.lock"
+
+# 获取会话写锁，返回 fd 号
+# 用法: session_acquire_lock || { log_error "获取锁失败"; exit 1; }
+#       ... 写操作 ...
+#       session_release_lock
+session_acquire_lock() {
+    exec 9>"$SESSION_LOCK_FILE"
+    flock -w 10 9 || return 1
+}
+
+session_release_lock() {
+    flock -u 9 2>/dev/null || true
+}
+
 show_help() {
     cat <<EOF
 用法: aiaos-cli session <动作> [选项]
@@ -68,6 +84,9 @@ session_new() {
     local session_file="$SESSION_DIR/$session_id.yaml"
     local created_at=$(date -Iseconds)
 
+    session_acquire_lock || { log_error "无法获取会话锁"; exit 1; }
+    trap 'session_release_lock' RETURN
+
     cat > "$session_file" <<EOF
 id: "$session_id"
 name: "$name"
@@ -82,6 +101,8 @@ EOF
 
     # 设置为当前会话
     echo "$session_id" > "$SESSION_DIR/.current"
+
+    session_release_lock; trap - RETURN
 
     if [[ "$format" == "json" ]]; then
         printf '{"status":"success","message":"会话创建成功","id":"%s","name":"%s","project":"%s"}\n' \
@@ -178,10 +199,15 @@ session_switch() {
     local session_file="$SESSION_DIR/$session_id.yaml"
     [[ -f "$session_file" ]] || { log_error "会话不存在: $session_id"; exit 1; }
 
+    session_acquire_lock || { log_error "无法获取会话锁"; exit 1; }
+    trap 'session_release_lock' RETURN
+
     echo "$session_id" > "$SESSION_DIR/.current"
 
     sed -i 's/^status:.*/status: "active"/' "$session_file"
     sed -i "s/^updated_at:.*/updated_at: \"$(date -Iseconds)\"/" "$session_file"
+
+    session_release_lock; trap - RETURN
 
     output_result "success" "已切换到会话" "id" "$session_id"
 }
@@ -205,10 +231,15 @@ session_archive() {
     local session_file="$SESSION_DIR/$session_id.yaml"
     [[ -f "$session_file" ]] || { log_error "会话不存在: $session_id"; exit 1; }
 
+    session_acquire_lock || { log_error "无法获取会话锁"; exit 1; }
+    trap 'session_release_lock' RETURN
+
     sed -i 's/^status:.*/status: "archived"/' "$session_file"
     sed -i "s/^updated_at:.*/updated_at: \"$(date -Iseconds)\"/" "$session_file"
 
     [[ -f "$SESSION_DIR/.current" ]] && [[ "$(cat "$SESSION_DIR/.current")" == "$session_id" ]] && rm "$SESSION_DIR/.current"
+
+    session_release_lock; trap - RETURN
 
     output_result "success" "会话已归档" "id" "$session_id"
 }
@@ -239,9 +270,14 @@ session_delete() {
         [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "取消删除"; exit 0; }
     fi
 
+    session_acquire_lock || { log_error "无法获取会话锁"; exit 1; }
+    trap 'session_release_lock' RETURN
+
     rm "$session_file"
 
     [[ -f "$SESSION_DIR/.current" ]] && [[ "$(cat "$SESSION_DIR/.current")" == "$session_id" ]] && rm "$SESSION_DIR/.current"
+
+    session_release_lock; trap - RETURN
 
     output_result "success" "会话已删除" "id" "$session_id"
 }

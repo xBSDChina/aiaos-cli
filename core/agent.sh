@@ -180,6 +180,27 @@ validate_write_path() {
     return 0
 }
 
+output_result() {
+    local status="$1" message="$2"
+    shift 2
+
+    if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
+        local json='{"status":"'$status'","message":"'$message'"'
+        while [[ $# -gt 0 ]]; do
+            json+=',"'$1'":"'$2'"'
+            shift 2
+        done
+        json+='}'
+        echo "$json"
+    else
+        echo "$message"
+        while [[ $# -gt 0 ]]; do
+            echo "  $1: $2"
+            shift 2
+        done
+    fi
+}
+
 agent_chat() {
     local message="" session_id="" agent_name="default" format="${AIAOS_CLI_OUTPUT_FORMAT:-stream}"
 

@@ -4,6 +4,7 @@
 # R2027: 废弃硬编码 expected_tests，从各套件输出解析实际计数
 # R2109: 并行执行所有测试套件（6 Shell + 1 Elisp = 7 并发）
 # R2300: 新增 Provider 测试套件（7 Shell + 1 Elisp = 8 并发）
+# R3001: 新增集成测试套件（8 Shell + 1 Elisp = 9 并发）
 
 set -euo pipefail
 
@@ -103,7 +104,7 @@ aggregate_shell() {
 
 main() {
     echo "======================================"
-    echo "AIAOS-CLI 全量测试 (R2109 并行模式)"
+    echo "AIAOS-CLI 全量测试 (R3001 并行模式)"
     echo "======================================"
     echo ""
     log_info "前置检查..."
@@ -142,6 +143,8 @@ main() {
 
     run_shell_suite "Provider 管理" "bash $SCRIPT_DIR/test_provider.sh" 90 &
     PID_OF["Provider 管理"]=$!; TMP_OUT["Provider 管理"]="/tmp/aiaos-runall-Provider_管理.$$.out"; TMP_RC["Provider 管理"]="/tmp/aiaos-runall-Provider_管理.$$.rc"; TMP_DUR["Provider 管理"]="/tmp/aiaos-runall-Provider_管理.$$.dur"
+    run_shell_suite "集成测试" "bash $SCRIPT_DIR/test_integration.sh" 120 &
+    PID_OF["集成测试"]=$!; TMP_OUT["集成测试"]="/tmp/aiaos-runall-集成测试.$$.out"; TMP_RC["集成测试"]="/tmp/aiaos-runall-集成测试.$$.rc"; TMP_DUR["集成测试"]="/tmp/aiaos-runall-集成测试.$$.dur"
 
     run_elisp_suite &
     PID_OF["Elisp 单元测试"]=$!; TMP_OUT["Elisp 单元测试"]="/tmp/aiaos-runall-Elisp.$$.out"; TMP_RC["Elisp 单元测试"]="/tmp/aiaos-runall-Elisp.$$.rc"; TMP_DUR["Elisp 单元测试"]="/tmp/aiaos-runall-Elisp.$$.dur"

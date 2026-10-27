@@ -80,7 +80,7 @@ def main():
     args = sys.argv[2:]
 
     if cmd == "list":
-        fmt = "table"
+        fmt = os.environ.get("AIAOS_CLI_OUTPUT_FORMAT", "table")
         if "--format" in args:
             fmt = args[args.index("--format") + 1]
         reg = get_default_registry(audit_log_path=os.environ.get("AIAOS_AUDIT_LOG"))
