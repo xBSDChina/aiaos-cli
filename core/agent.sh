@@ -23,6 +23,7 @@ show_help() {
   --args JSON         工具参数 JSON (tool)
   --limit N           历史条数限制 (history, 默认: 20)
   --format FORMAT     输出格式 (json|table|stream, 默认: stream)
+  --allow-dangerous   显式授权执行危险命令/写入受限路径 (tool)
   -h, --help          显示帮助
 
 示例:
@@ -198,8 +199,8 @@ print(json.dumps({'status': 'success', 'content': content, 'path': sys.argv[1]},
 }
 
 agent_tool_write_file() {
-    local path="$1" content="$2" format="$3"
-    if ! validate_write_path "$path"; then
+    local path="$1" content="$2" format="$3" allow_dangerous="${4:-}"
+    if [[ "$allow_dangerous" != "true" ]] && ! validate_write_path "$path"; then
         if [[ "$format" == "json" ]]; then
             output_result "error" "路径受限" "path" "$path"
         fi
@@ -233,8 +234,8 @@ print(json.dumps({'status': 'success', 'path': sys.argv[1], 'files': files}, ens
 }
 
 agent_tool_execute_command() {
-    local cmd="$1" format="$2"
-    if ! check_dangerous_command "$cmd"; then
+    local cmd="$1" format="$2" allow_dangerous="${3:-}"
+    if [[ "$allow_dangerous" != "true" ]] && ! check_dangerous_command "$cmd"; then
         if [[ "$format" == "json" ]]; then
             output_result "error" "危险命令已拒绝" "command" "$cmd"
         fi
@@ -251,13 +252,14 @@ print(json.dumps({'status': 'success', 'output': sys.stdin.read()}, ensure_ascii
 }
 
 agent_tool() {
-    local tool_name="" args="{}" session_id=""
+    local tool_name="" args="{}" session_id="" allow_dangerous=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --tool) tool_name="$2"; shift 2 ;;
             --args) args="$2"; shift 2 ;;
             --session) session_id="$2"; shift 2 ;;
+            --allow-dangerous) allow_dangerous="true"; shift ;;
             -h|--help) show_help; exit 0 ;;
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
@@ -281,7 +283,7 @@ agent_tool() {
         write_file)
             local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path',''))")
             local content=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('content',''))")
-            agent_tool_write_file "$path" "$content" "$format" || status="error"
+            agent_tool_write_file "$path" "$content" "$format" "$allow_dangerous" || status="error"
             ;;
         list_files)
             local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path','.'))")
@@ -289,7 +291,7 @@ agent_tool() {
             ;;
         execute_command)
             local cmd=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('command',''))")
-            agent_tool_execute_command "$cmd" "$format" || status="error"
+            agent_tool_execute_command "$cmd" "$format" "$allow_dangerous" || status="error"
             ;;
         *)
             if [[ "$format" == "json" ]]; then
