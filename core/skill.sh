@@ -5,7 +5,7 @@ set -euo pipefail
 
 # 技能目录
 SKILL_DIRS=(
-    "$(dirname "${BASH_SOURCE[0]}")/../skills"
+    "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../skills"
     "/usr/share/aiaos/skills"
     "${AIAOS_CLI_CONFIG_DIR:-$HOME/.config/aiaos}/skills"
 )
@@ -657,7 +657,7 @@ PYM
     # R1323: 兜底定义 elisp_dir，防止直接 source skill.sh 时变量未绑定
     local elisp_dir="${AIAOS_CLI_ELISP_DIR:-}"
     if [[ -z "$elisp_dir" ]]; then
-        local _cli_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        local _cli_root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
         elisp_dir="$_cli_root/elisp"
     fi
     command -v "$emacs_bin" >/dev/null 2>&1 || { log_error "emacs 未找到"; exit 1; }

@@ -11,7 +11,7 @@ readonly AIAOS_CLI_VERSION="1.0.0"
 readonly AIAOS_CLI_NAME="aiaos-cli"
 
 # 目录解析
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 export AIAOS_CLI_ROOT="$(dirname "$SCRIPT_DIR")"
 export AIAOS_CLI_CORE_DIR="$AIAOS_CLI_ROOT/core"
 export AIAOS_CLI_SKILLS_DIR="$AIAOS_CLI_ROOT/skills"

@@ -32,6 +32,32 @@ show_help() {
 EOF
 }
 
+# 安全检查：检测危险命令
+check_dangerous_command() {
+    local cmd="$1"
+    # 检测常见危险命令
+    local dangerous_patterns='rm\s+-rf?\s+/|dd\s+if=|mkfs|:\(\)\s*\{|>\s*/dev/sd|chmod\s+-R\s+777\s+/|curl.*\|.*bash|wget.*\|.*sh'
+    if echo "$cmd" | grep -qE "$dangerous_patterns"; then
+        log_error "检测到危险命令，已拒绝执行"
+        log_warn "禁止的命令模式: $dangerous_patterns"
+        return 1
+    fi
+    return 0
+}
+
+# 安全检查：验证写入路径
+validate_write_path() {
+    local path="$1"
+    # 禁止写入系统关键目录
+    local forbidden_dirs='/etc/|/bin/|/sbin/|/usr/|/boot/|/sys/|/proc/'
+    if echo "$path" | grep -qE "$forbidden_dirs"; then
+        log_error "禁止写入系统关键目录"
+        log_warn "受限路径: $path"
+        return 1
+    fi
+    return 0
+}
+
 agent_chat() {
     local message="" session_id="" agent_name="default" format="${AIAOS_CLI_OUTPUT_FORMAT:-stream}"
 
@@ -100,6 +126,83 @@ agent_delegate() {
     output_result "success" "任务已委托" "task_id" "$task_id" "agent" "$agent_name" "session" "$session_id"
 }
 
+# 统一工具调用逻辑 — 消除 JSON/table 格式重复
+agent_tool_read_file() {
+    local path="$1" format="$2"
+    if [[ ! -f "$path" ]]; then
+        if [[ "$format" == "json" ]]; then
+            output_result "error" "文件不存在" "path" "$path"
+        else
+            echo "错误: 文件不存在: $path" >&2
+            return 1
+        fi
+        return 1
+    fi
+    if [[ "$format" == "json" ]]; then
+        python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    content = f.read()
+print(json.dumps({'status': 'success', 'content': content, 'path': sys.argv[1]}, ensure_ascii=False))
+" "$path"
+    else
+        cat "$path"
+    fi
+}
+
+agent_tool_write_file() {
+    local path="$1" content="$2" format="$3"
+    if ! validate_write_path "$path"; then
+        if [[ "$format" == "json" ]]; then
+            output_result "error" "路径受限" "path" "$path"
+        fi
+        return 1
+    fi
+    mkdir -p "$(dirname "$path")" 2>/dev/null || true
+    echo "$content" > "$path"
+    if [[ "$format" == "json" ]]; then
+        output_result "success" "文件已写入" "path" "$path"
+    else
+        echo "✓ 文件已写入: $path"
+    fi
+}
+
+agent_tool_list_files() {
+    local path="$1" format="$2"
+    path="${path:-.}"
+    if [[ "$format" == "json" ]]; then
+        python3 -c "
+import json, os, sys
+files = []
+for f in os.listdir(sys.argv[1]):
+    fp = os.path.join(sys.argv[1], f)
+    stat = os.stat(fp)
+    files.append({'name': f, 'size': stat.st_size, 'is_dir': os.path.isdir(fp)})
+print(json.dumps({'status': 'success', 'path': sys.argv[1], 'files': files}, ensure_ascii=False))
+" "$path"
+    else
+        ls -la "$path"
+    fi
+}
+
+agent_tool_execute_command() {
+    local cmd="$1" format="$2"
+    if ! check_dangerous_command "$cmd"; then
+        if [[ "$format" == "json" ]]; then
+            output_result "error" "危险命令已拒绝" "command" "$cmd"
+        fi
+        return 1
+    fi
+    if [[ "$format" == "json" ]]; then
+        bash -c "$cmd" 2>&1 | python3 -c "
+import json, sys
+print(json.dumps({'status': 'success', 'output': sys.stdin.read()}, ensure_ascii=False))
+"
+    else
+        bash -c "$cmd"
+    fi
+}
+
 agent_tool() {
     local tool_name="" args="{}" session_id=""
 
@@ -119,79 +222,37 @@ agent_tool() {
 
     log_info "调用工具: $tool_name"
 
-    if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
-        case "$tool_name" in
-            read_file)
-                local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path',''))")
-                if [[ -f "$path" ]]; then
-                    python3 -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    content = f.read()
-print(json.dumps({'status': 'success', 'content': content, 'path': sys.argv[1]}, ensure_ascii=False))
-" "$path"
-                else
-                    output_result "error" "文件不存在" "path" "$path"
-                fi
-                ;;
-            write_file)
-                local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path',''))")
-                local content=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('content',''))")
-                echo "$content" > "$path"
-                output_result "success" "文件已写入" "path" "$path"
-                ;;
-            list_files)
-                local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path','.'))")
-                python3 -c "
-import json, os, sys
-files = []
-for f in os.listdir(sys.argv[1]):
-    fp = os.path.join(sys.argv[1], f)
-    stat = os.stat(fp)
-    files.append({'name': f, 'size': stat.st_size, 'is_dir': os.path.isdir(fp)})
-print(json.dumps({'status': 'success', 'path': sys.argv[1], 'files': files}, ensure_ascii=False))
-" "$path"
-                ;;
-            execute_command)
-                local cmd=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('command',''))")
-                bash -c "$cmd" 2>&1 | python3 -c "
-import json, sys
-print(json.dumps({'status': 'success', 'output': sys.stdin.read()}, ensure_ascii=False))
-"
-                ;;
-            *)
+    local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
+    local status="success"
+    local result=""
+
+    case "$tool_name" in
+        read_file)
+            local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path',''))")
+            agent_tool_read_file "$path" "$format" || status="error"
+            ;;
+        write_file)
+            local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path',''))")
+            local content=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('content',''))")
+            agent_tool_write_file "$path" "$content" "$format" || status="error"
+            ;;
+        list_files)
+            local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path','.'))")
+            agent_tool_list_files "$path" "$format" || status="error"
+            ;;
+        execute_command)
+            local cmd=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('command',''))")
+            agent_tool_execute_command "$cmd" "$format" || status="error"
+            ;;
+        *)
+            if [[ "$format" == "json" ]]; then
                 output_result "error" "未知工具" "tool" "$tool_name"
-                ;;
-        esac
-    else
-        case "$tool_name" in
-            read_file)
-                local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path',''))")
-                if [[ -f "$path" ]]; then
-                    cat "$path"
-                else
-                    output_result "error" "文件不存在" "path" "$path"
-                fi
-                ;;
-            write_file)
-                local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path',''))")
-                local content=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('content',''))")
-                echo "$content" > "$path"
-                output_result "success" "文件已写入" "path" "$path"
-                ;;
-            list_files)
-                local path=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path','.'))")
-                ls -la "$path"
-                ;;
-            execute_command)
-                local cmd=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('command',''))")
-                bash -c "$cmd"
-                ;;
-            *)
-                output_result "error" "未知工具" "tool" "$tool_name"
-                ;;
-        esac
-    fi
+            else
+                echo "错误: 未知工具: $tool_name" >&2
+            fi
+            status="error"
+            ;;
+    esac
 }
 
 agent_history() {
@@ -201,7 +262,6 @@ agent_history() {
         case "$1" in
             --session) session_id="$2"; shift 2 ;;
             --limit) limit="$2"; shift 2 ;;
-            --limit=*) limit="${1#*=}"; shift ;;
             --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
             --format=*) format="${1#*=}"; shift; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
             -h|--help) show_help; exit 0 ;;
@@ -210,94 +270,68 @@ agent_history() {
     done
 
     session_id="${session_id:-$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "default")}"
-
-    local history_file="${AIAOS_CLI_DATA_DIR}/sessions/$session_id.history.jsonl"
+    local history_file="${AIAOS_CLI_DATA_DIR}/sessions/${session_id}.history"
 
     if [[ ! -f "$history_file" ]]; then
-        output_result "info" "无历史记录" "session" "$session_id"
+        if [[ "$format" == "json" ]]; then
+            echo '{"status":"ok","data":{"history":[],"count":0}}'
+        else
+            echo "（无对话历史）"
+        fi
         return 0
     fi
 
+    # 使用 timeout 限制读取行数，防止大文件
+    local entries
+    entries=$(timeout 5 tail -n "$limit" "$history_file" 2>/dev/null || true)
+
     if [[ "$format" == "json" ]]; then
-        echo "["
-        tail -n "$limit" "$history_file" | paste -sd, -
-        echo "]"
-    else
-        printf "%-20s %-10s %s\n" "TIMESTAMP" "ROLE" "CONTENT"
-        printf "%-20s %-10s %s\n" "--------------------" "----------" "----------------------------------------"
-        tail -n "$limit" "$history_file" | while IFS= read -r line; do
-            printf '%s\n' "$line" | python3 -c '
+        python3 -c "
 import json, sys
-try:
-    data = json.loads(sys.stdin.read())
-except Exception:
-    sys.exit(0)
-ts = (data.get("timestamp", "") or "")[:19]
-role = data.get("role", "") or ""
-content = (data.get("content", "") or "")[:80]
-print(f"{ts:<20} {role:<10} {content}")
-'
-        done
+entries = sys.stdin.read().strip().split('\n') if sys.stdin else []
+entries = [e for e in entries if e]
+print(json.dumps({'status':'ok','data':{'history':entries,'count':len(entries)}}, ensure_ascii=False))
+" <<< "$entries"
+    else
+        echo "$entries"
     fi
 }
 
 agent_status() {
-    local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-
-    local status="running"
-    local agents=("default" "coder" "reviewer" "architect")
-    local current_agent="default"
-
-    local current_session
-    current_session=$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "none")
-    if [[ "$format" == "json" ]]; then
-        python3 -c "
-import json, sys
-print(json.dumps({
-    'status': sys.argv[1],
-    'current_agent': sys.argv[2],
-    'available_agents': ['default', 'coder', 'reviewer', 'architect'],
-    'session': sys.argv[3]
-}))
-" "$status" "$current_agent" "$current_session"
-    else
-        echo "Agent 状态: $status"
-        echo "当前 Agent: $current_agent"
-        echo "可用 Agents: ${agents[*]}"
-        echo "当前会话: $(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "none")"
-    fi
-}
-
-output_result() {
-    local status="$1" message="$2"
-    shift 2
+    local session_id="${AIAOS_CLI_DATA_DIR}/sessions/.current"
+    session_id=$(cat "$session_id" 2>/dev/null || echo "default")
 
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
-        local json="{\"status\":\"$status\",\"message\":\"$message\""
-        while [[ $# -gt 0 ]]; do
-            json+=",\"$1\":\"$2\""
-            shift 2
-        done
-        json+="}"
-        echo "$json"
+        local history_count=0
+        local history_file="${AIAOS_CLI_DATA_DIR}/sessions/${session_id}.history"
+        if [[ -f "$history_file" ]]; then
+            history_count=$(wc -l < "$history_file")
+        fi
+        output_result "success" "Agent 状态" \
+            "session_id" "$session_id" \
+            "status" "active" \
+            "history_count" "$history_count"
     else
-        echo "$message"
-        while [[ $# -gt 0 ]]; do
-            echo "  $1: $2"
-            shift 2
-        done
+        echo "AIAOS-CLI Agent 状态"
+        echo "===================="
+        echo "会话: $session_id"
+        echo "状态: active"
     fi
 }
 
-action="${1:-help}"
-shift || true
+main() {
+    local action="${1:-}"
+    shift || true
 
-case "$action" in
-    chat) agent_chat "$@" ;;
-    delegate) agent_delegate "$@" ;;
-    tool) agent_tool "$@" ;;
-    history) agent_history "$@" ;;
-    status) agent_status "$@" ;;
-    help|--help|-h) show_help ;;
-    *) log_error "未知动作: $action"; show_help; exit 1 ;;
-esac
+    case "$action" in
+        chat) agent_chat "$@" ;;
+        delegate) agent_delegate "$@" ;;
+        tool) agent_tool "$@" ;;
+        history) agent_history "$@" ;;
+        status) agent_status "$@" ;;
+        ""|-h|--help) show_help ;;
+        *) log_error "未知动作: $action"; show_help; exit 1 ;;
+    esac
+}
+
+main "$@"

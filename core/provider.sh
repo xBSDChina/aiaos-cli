@@ -25,7 +25,7 @@ if ! declare -f log_info >/dev/null 2>&1; then
 fi
 
 # AIAOS 项目根目录（lib/ 所在目录）
-AIAOS_ROOT="${AIAOS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+AIAOS_ROOT="${AIAOS_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)}"
 AIAOS_LIB_DIR="${AIAOS_LIB_DIR:-$AIAOS_ROOT/lib}"
 AIAOS_AUDIT_LOG="${AIAOS_AUDIT_LOG:-${AIAOS_CLI_CONFIG_DIR:-$HOME/.config/aiaos}/provider_audit.log}"
 

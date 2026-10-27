@@ -37,6 +37,17 @@
 (require 'json)
 (require 'url)
 
+;; TUI 模块集成
+(require 'aiaos-cli-core)
+(require 'aiaos-cli-state)
+(require 'aiaos-cli-context)
+(require 'aiaos-cli-lifecycle)
+(require 'aiaos-cli-component)
+(require 'aiaos-cli-theme)
+(require 'aiaos-cli-components)
+(require 'aiaos-cli-router)
+(require 'aiaos-cli-app)
+
 (defgroup aiaos-cli nil
   "AIAOS-CLI Emacs frontend."
   :group 'tools
