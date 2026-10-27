@@ -137,12 +137,16 @@ log_search() {
 
     [[ -f "$log_file" ]] || { log_error "日志文件不存在: $log_file"; exit 1; }
 
-    local grep_cmd="grep"
-    [[ -n "$pattern" ]] && grep_cmd+=" -E \"$pattern\""
-    # R2105: JSON Lines 格式下，level 过滤改为 grep 字段值
-    [[ -n "$level" ]] && grep_cmd+=" | grep -i \"\\\"level\\\":\\\"$level\\\"\""
-
-    local results=$(eval "$grep_cmd \"$log_file\" | tail -n \"$limit\"")
+    local results
+    if [[ -n "$pattern" && -n "$level" ]]; then
+        results=$(grep -E "$pattern" "$log_file" | grep -i "\"level\":\"$level\"" | tail -n "$limit")
+    elif [[ -n "$pattern" ]]; then
+        results=$(grep -E "$pattern" "$log_file" | tail -n "$limit")
+    elif [[ -n "$level" ]]; then
+        results=$(grep "$log_file" | grep -i "\"level\":\"$level\"" | tail -n "$limit")
+    else
+        results=$(grep "$log_file" | tail -n "$limit")
+    fi
 
     if [[ "$format" == "json" ]]; then
         echo "$results" | python3 -c "
