@@ -1744,3 +1744,150 @@ design.md (怎么开发) ──► 模块架构/测试策略/Elisp陷阱
 **更新时间**: 2026-10-27 19:20  
 **维护者**: AIAOS Project  
 **变更**: 添加第 15 章 R2600 异步超时保护修复与范式验证全流程记录
+
+---
+
+## 16. fallback-order 持久化缺陷修复与回归验证 (R2700 · 2026-10-27)
+
+### 16.1 任务背景
+
+本次任务基于 `~/aiaos-cli_design.md`（范式指引）和 `~/aiaos-cli_skills.md`（技能开发指引）两份文档，对 aiaos-cli 项目进行开发调试与范式验证。
+
+**任务触发点**：验证 Provider 管理功能完整性时，发现 `fallback-order` 命令存在持久化缺陷（TD-004）。
+
+### 16.2 缺陷根因分析
+
+#### TD-004 缺陷描述
+
+| 子缺陷 | 现象 | 根因 |
+|-------|------|------|
+| TD-004a | `fallback-order` 多次设置后 provider.yaml 出现重复行 | 使用 `open(..., "a")` 追加模式写入，未过滤旧行 |
+| TD-004b | `report` 命令不返回持久化的 fallback_order | report 只读取 `fallback_strategy`，未读取 `fallback_order` |
+
+#### 根因定位过程
+
+```bash
+# 1. 复现：设置 fallback-order 两次
+aiaos-cli provider fallback-order agnes,sensenova,xunfei
+aiaos-cli provider fallback-order cn,red,nvidia
+
+# 2. 检查 provider.yaml —— 发现重复行
+cat ~/.config/aiaos/provider.yaml
+# fallback_order: agnes,sensenova,xunfei
+# fallback_order: cn,red,nvidia   ← 重复行！
+
+# 3. 检查 report —— fallback_order 为空
+aiaos-cli provider report --format json
+# {"strategy":"round_robin", ..., "fallback_order": []}  ← 丢失！
+
+# 4. 定位代码 —— core/provider.sh 184-196 行
+#    with open(..., "a") as f:  ← 追加模式！
+```
+
+### 16.3 修复方案
+
+#### 修复1：覆盖模式写入（TD-004a）
+
+```python
+# 修复前（追加模式，产生重复行）
+with open(cfg_path, "a") as f:
+    f.write(f"fallback_order: {order_str}\n")
+
+# 修复后（覆盖模式，与 fallback 命令一致）
+old_lines = []
+if os.path.exists(cfg_path):
+    with open(cfg_path) as f:
+        old_lines = [l for l in f if not l.startswith("fallback_order:")]
+with open(cfg_path, "w") as f:
+    f.writelines(old_lines)
+    f.write(f"fallback_order: {order_str}\n")
+```
+
+#### 修复2：report 读取持久化 fallback_order（TD-004b）
+
+```python
+# 修复前：只读取 fallback_strategy
+# 修复后：同时读取 fallback_order 并恢复至 registry
+persisted_order = None
+if os.path.exists(cfg_path):
+    for line in f:
+        if line.startswith("fallback_strategy:"):
+            persisted_strategy = ...
+        if line.startswith("fallback_order:"):
+            persisted_order = ...
+if persisted_order:
+    reg.set_fallback_order([p.strip() for p in persisted_order.split(",") if p.strip()])
+```
+
+### 16.4 回归测试
+
+新增 Test 17/18 到 `tests/test_provider.sh`：
+
+| 测试 | 验证内容 | 结果 |
+|------|---------|------|
+| Test 17 | fallback_order 无重复行 | ✅ |
+| Test 17 | fallback_order 值为最新 | ✅ |
+| Test 18 | report 包含 fallback_order | ✅ |
+| Test 18 | report 包含持久化值 | ✅ |
+
+### 16.5 任务流程范式总结
+
+#### 范式1：功能完整性验证驱动
+
+```
+skills.md 声明功能清单
+        │
+        ├──► 逐个验证（provider list/use/test/tier/fallback/fallback-order/chat/audit/report）
+        │
+        └──► 发现"声明-实现脱节" → 定位缺陷 → 修复 → 回归
+```
+
+**核心价值**：从文档声明的功能清单出发，逐个验证实际行为，能高效发现"看似实现实则未完整"的缺陷。
+
+#### 范式2：配置持久化模式一致性检查
+
+```
+配置写入模式检查清单：
+├── 追加模式 (a)  ──► 多次写入产生重复行 ⚠️ 缺陷
+├── 覆盖模式 (w)  ──► 先过滤旧行再写入 ✅ 正确
+└── 幂等性验证    ──► 重复设置应产生相同结果
+```
+
+**核心价值**：配置文件的写入模式（追加 vs 覆盖）是常见缺陷来源，应统一采用"过滤旧行+覆盖写入"模式。
+
+#### 范式3：跨会话持久化验证
+
+```bash
+# 跨会话验证：设置 → 新进程读取 → 确认值保留
+aiaos-cli provider fallback-order cn,red
+aiaos-cli provider report  # 新进程，应读到 cn,red
+```
+
+**核心价值**：配置类功能的测试必须包含"跨进程/跨会话"验证，否则无法发现持久化丢失。
+
+### 16.6 双编号制
+
+- 缺陷编号：TD-004（fallback-order Persistence Defect）
+- 版本编号：R2700（Round 2700）
+
+### 16.7 范式验证结论
+
+| 范式要素 | 验证结果 | 说明 |
+|---------|---------|------|
+| 双指引文档驱动 | ✅ | 从 skills.md 功能清单发现验证切入点 |
+| 功能完整性验证 | ✅ | provider 9个动作逐个验证，发现2个子缺陷 |
+| 回归测试 | ✅ | 新增4项测试，全量 213/213 通过 |
+| 规范提交 | ✅ | R2700 + TD-004 双编号 |
+| 范式沉淀 | ✅ | 第16章追加，知识积累闭环 |
+
+**最终状态**：
+- 测试：213/213 全部通过（Provider 27→31）
+- Git：R2700 已提交（commit e472e41）
+- 文档：design.md 第16章追加完成
+
+---
+
+**文档版本**: 2.0  
+**更新时间**: 2026-10-27 20:30  
+**维护者**: AIAOS Project  
+**变更**: 添加第 16 章 R2700 fallback-order 持久化缺陷修复与回归验证记录
