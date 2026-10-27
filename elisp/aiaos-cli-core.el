@@ -1,4 +1,4 @@
-;;; aiaos-cli-core.el --- aiaos-cli 核心接口定义
+;;; aiaos-cli-core.el --- aiaos-cli 核心接口定义 -*- lexical-binding: t; -*-
 ;;
 ;; 为 TUI 模块提供共享的工具函数和类型定义
 ;; 避免 circular dependency

@@ -168,3 +168,6 @@ so the user can act immediately."
       (should (equal (gethash "id" (aref items 0)) 1))
       (should (equal (gethash "name" (aref items 1)) "b"))
       (should (equal (gethash "id" (aref items 2)) 3)))))
+(provide 'aiaos-cli-tests)
+
+;;; aiaos-cli-tests.el ends here
