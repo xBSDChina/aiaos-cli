@@ -14,8 +14,14 @@
 (defun aiaos-cli-skill-date-tools/add (args &rest _options)
   "Add or subtract days/months from a base date."
   (let* ((date (plist-get args :date))
-         (days (plist-get args :days))
-         (months (or (plist-get args :months) 0)))
+         (days (cond
+                ((stringp (plist-get args :days)) (string-to-number (plist-get args :days)))
+                ((numberp (plist-get args :days)) (plist-get args :days))
+                (t 0)))
+         (months (cond
+                 ((stringp (plist-get args :months)) (string-to-number (plist-get args :months)))
+                 ((numberp (plist-get args :months)) (plist-get args :months))
+                 (t 0))))
     (unless date (error "missing :date"))
     (let* ((parts (split-string date "-"))
            (year (string-to-number (nth 0 parts)))

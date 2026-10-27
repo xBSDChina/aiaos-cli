@@ -161,12 +161,22 @@ def main():
         strategy = "sequential"
         if "--strategy" in args:
             strategy = args[args.index("--strategy") + 1]
+        valid_strategies = {"sequential", "round_robin", "priority"}
+        if strategy not in valid_strategies:
+            emit({"error": f"invalid strategy '{strategy}', must be one of: {', '.join(sorted(valid_strategies))}", "usage": "aiaos-cli provider fallback --strategy <s>"})
+            sys.exit(1)
         reg = get_default_registry(audit_log_path=os.environ.get("AIAOS_AUDIT_LOG"))
         router = FallbackRouter(reg, strategy=FallbackStrategy(strategy))
-        # 持久化策略
+        # 持久化策略（覆盖模式：先读旧配置，只替换 fallback_strategy 行）
         cfg = os.environ.get("AIAOS_CLI_CONFIG_DIR", os.path.expanduser("~/.config/aiaos"))
         os.makedirs(cfg, exist_ok=True)
-        with open(os.path.join(cfg, "provider.yaml"), "a") as f:
+        cfg_path = os.path.join(cfg, "provider.yaml")
+        old_lines = []
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                old_lines = [l for l in f if not l.startswith("fallback_strategy:")]
+        with open(cfg_path, "w") as f:
+            f.writelines(old_lines)
             f.write(f"fallback_strategy: {strategy}\n")
         print(f"fallback strategy -> {strategy}")
         return
@@ -214,12 +224,34 @@ def main():
         name = args[0]
         reg = get_default_registry(audit_log_path=os.environ.get("AIAOS_AUDIT_LOG"))
         log = reg.get_audit_log(name)
-        emit({"provider": name, "audit_log": log})
+        # R2500: 附加 circuit breaker 状态
+        try:
+            state = reg.get_state(name)
+            circuit = {
+                "tier": state.tier.value,
+                "consecutive_errors": state.consecutive_errors,
+                "consecutive_successes": state.consecutive_successes,
+                "circuit_open": state.circuit_open,
+                "circuit_open_until": state.circuit_open_until,
+            }
+        except Exception:
+            circuit = None
+        emit({"provider": name, "audit_log": log, "circuit_state": circuit})
         return
 
     if cmd == "report":
         reg = get_default_registry(audit_log_path=os.environ.get("AIAOS_AUDIT_LOG"))
-        router = FallbackRouter(reg, strategy=FallbackStrategy.SEQUENTIAL)
+        # R2500: 读取持久化策略，而非硬编码
+        cfg = os.environ.get("AIAOS_CLI_CONFIG_DIR", os.path.expanduser("~/.config/aiaos"))
+        cfg_path = os.path.join(cfg, "provider.yaml")
+        persisted_strategy = "sequential"
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                for line in f:
+                    if line.startswith("fallback_strategy:"):
+                        persisted_strategy = line.split(":", 1)[1].strip()
+                        break
+        router = FallbackRouter(reg, strategy=FallbackStrategy(persisted_strategy))
         emit(router.report())
         return
 

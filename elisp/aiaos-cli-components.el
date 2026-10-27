@@ -431,6 +431,52 @@ SHORTCUTS 是快捷键列表，每个快捷键是 (描述 . 按键) 对
             (insert ?\n)))
     component))
 
+;; ============================================================
+;; 虚拟列表组件 (阶段4 高级组件)
+;; ============================================================
+
+(defun aiaos-cli-component-vlist (items &optional selected-idx window-size)
+  "创建虚拟列表组件（支持大数据集滚动）
+
+ITEMS 是列表项列表
+SELECTED-IDX 是选中项的索引（可选，默认0）
+WINDOW-SIZE 是可视窗口大小（可选，默认20）
+
+示例:
+  (aiaos-cli-component-vlist (number-sequence 1 1000) 0 20)"
+  (let ((component (make-aiaos-cli--component :name 'vlist))
+        (theme (aiaos-cli--theme-current))
+        (selected-state (aiaos-cli--state-create (or selected-idx 0)))
+        (scroll-state (aiaos-cli--state-create 0)))
+    ;; 设置渲染函数
+    (setf (aiaos-cli--component-render component)
+          (lambda (buffer)
+            (let* ((total (length items))
+                   (ws (or window-size 20))
+                   (start (max 0 (aiaos-cli--state-get scroll-state)))
+                   (end (min total (+ start ws))))
+              ;; 渲染标题
+              (insert (format "Virtual List [%d items, showing %d-%d]\n"
+                               total start end))
+              (insert (make-string 40 ?\u2500) "\n")
+              ;; 渲染可视范围内的项
+              (dotimes (i (- end start))
+                (let* ((idx (+ start i))
+                       (item (nth idx items))
+                       (is-selected (= idx (aiaos-cli--state-get selected-state))))
+                  (if is-selected
+                      (insert (aiaos-cli--theme-icon theme :pointer) " ")
+                    (insert "  "))
+                  (insert (format "%d: %S" idx item) "\n")))
+              ;; 渲染滚动提示
+              (when (> total ws)
+                (insert "\n" (make-string 40 ?\u2500) "\n")
+                (insert (format "[↑↓ scroll | ↑↓ selected | q quit]" start end))
+              ))))
+    ;; 添加状态到组件
+    (setf (aiaos-cli--component-state component) (list selected-state scroll-state))
+    component))
+
 ;; 初始化组件库
 (defun aiaos-cli-components-init ()
   "初始化 UI 组件库"
