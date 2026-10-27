@@ -147,7 +147,7 @@ for k, v in sorted(ctx.items()):
         fi
     else
         local ctx_json=$(capture_context)
-        
+
         if [[ "$format" == "json" ]]; then
             echo "$ctx_json" | python3 -m json.tool
         elif [[ "$format" == "yaml" ]]; then
@@ -374,7 +374,7 @@ context_export() {
     [[ -f "$context_file" ]] || { log_error "上下文不存在: $context_id"; exit 1; }
 
     cp "$context_file" "$output_file"
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         python3 -c '
 import yaml, json, sys

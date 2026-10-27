@@ -40,7 +40,7 @@ generate_id() {
 
 project_init() {
     local name="" template="python" path="."
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
@@ -52,12 +52,12 @@ project_init() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -n "$name" ]] || { log_error "需要 --name 参数"; exit 1; }
-    
+
     mkdir -p "$path"
     cd "$path"
-    
+
     mkdir -p .aiaos
     cat > .aiaos/project.yaml <<YAML
 name: "$name"
@@ -69,7 +69,7 @@ config:
   test_command: ""
   deploy_targets: []
 YAML
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         python3 -c "
 import json
@@ -118,7 +118,7 @@ print(json.dumps({
 
 project_deploy() {
     local target="local" env="dev"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --target) target="$2"; shift 2 ;;
@@ -127,7 +127,7 @@ project_deploy() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     log_info "部署项目到 $target ($env)" >log_info "部署项目到 $target ($env)"2
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         python3 -c "
@@ -149,7 +149,7 @@ project_status() {
     if git status --porcelain 2>/dev/null | grep -q .; then
         git_status="dirty"
     fi
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         python3 -c "
 import json, os
@@ -170,7 +170,7 @@ print(json.dumps({
 
 project_info() {
     local config_file=".aiaos/project.yaml"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --config) config_file="$2"; shift 2 ;;
@@ -178,9 +178,9 @@ project_info() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -f "$config_file" ]] || { log_error "配置文件不存在: $config_file"; exit 1; }
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         python3 -c "
 import yaml, json, sys
@@ -196,7 +196,7 @@ print(json.dumps(data, ensure_ascii=False))
 output_result() {
     local status="$1" message="$2"
     shift 2
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         local json="{\"status\":\"$status\",\"message\":\"$message\""
         while [[ $# -gt 0 ]]; do

@@ -41,7 +41,7 @@ EOF
 check_command() {
     local cmd="$1" min_version="${2:-}" desc="${3:-}" optional="${4:-false}"
     local status="✓" version="" details=""
-    
+
     if command -v "$cmd" &>/dev/null; then
         case "$cmd" in
             emacs) version=$(emacs --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1) || version="error" ;;
@@ -57,7 +57,7 @@ check_command() {
             wget) version=$(wget --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || version="found" ;;
             *) version="found" ;;
         esac
-        
+
         # Handle emacs error case (command exists but fails to run)
         if [[ "$version" == "error" ]] || [[ -z "$version" ]]; then
             if [[ "$optional" == "true" ]]; then
@@ -70,13 +70,13 @@ check_command() {
             DOCTOR_CHECKS+=("$status|$cmd|$version|$desc|$details")
             return
         fi
-        
+
         if [[ -n "$min_version" ]]; then
             local cur_major=$(echo "$version" | cut -d. -f1)
             local cur_minor=$(echo "$version" | cut -d. -f2)
             local min_major=$(echo "$min_version" | cut -d. -f1)
             local min_minor=$(echo "$min_version" | cut -d. -f2)
-            
+
             if [[ $cur_major -lt $min_major ]] || [[ $cur_major -eq $min_major && $cur_minor -lt $min_minor ]]; then
                 status="⚠"
                 details="版本 $version < 最低要求 $min_version"
@@ -91,14 +91,14 @@ check_command() {
         version="missing"
         details="未安装"
     fi
-    
+
     DOCTOR_CHECKS+=("$status|$cmd|$version|$desc|$details")
 }
 
 check_directory() {
     local dir="$1" desc="$2"
     local status="✓" version="" details=""
-    
+
     if [[ -d "$dir" ]]; then
         if [[ -w "$dir" ]]; then
             details="可写"
@@ -111,13 +111,13 @@ check_directory() {
         version="missing"
         details="目录不存在"
     fi
-    
+
     DOCTOR_CHECKS+=("$status|dir:$dir|$version|$desc|$details")
 }
 
 doctor_check() {
     local verbose=false format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --verbose) verbose=true; shift ;;
@@ -127,9 +127,9 @@ doctor_check() {
             *) log_error "未知选项: $1"; show_help; return 1 ;;
         esac
     done
-    
+
     DOCTOR_CHECKS=()
-    
+
     check_command emacs "28.1" "Emacs 编辑器 (核心运行环境)"
     check_command python3 "3.10" "Python 3.10+ (脚本运行时)"
     check_command git "2.30" "Git 版本控制"
@@ -145,19 +145,19 @@ doctor_check() {
     # 至少装一个即可。此处按 optional=true 处理：缺失仅告警不阻断。
     check_command curl "" "HTTP 客户端 (agent 下载/探测依赖)" "true"
     check_command wget "" "HTTP 客户端 (curl 备选)" "true"
-    
+
     check_directory "$AIAOS_CLI_DATA_DIR" "数据目录"
     check_directory "$AIAOS_CLI_CONFIG_DIR" "配置目录"
     check_directory "$AIAOS_CLI_CACHE_DIR" "缓存目录"
-    
+
     if [[ ! -f "$AIAOS_CLI_CONFIG_DIR/cli.yaml" ]]; then
         DOCTOR_CHECKS+=("⚠|config|missing|配置文件|将使用默认配置")
     else
         DOCTOR_CHECKS+=("✓|config|exists|配置文件|已存在")
     fi
-    
+
     local passed=0 warnings=0 failed=0
-    
+
     if [[ "$format" == "json" ]]; then
         local json="{\"checks\":["
         local first=true
@@ -176,21 +176,21 @@ doctor_check() {
     else
         printf "%-4s %-20s %-15s %-30s %s\n" "ST" "NAME" "VERSION" "DESCRIPTION" "DETAILS"
         printf "%-4s %-20s %-15s %-30s %s\n" "---" "--------------------" "---------------" "------------------------------" "-----"
-        
+
         for check in "${DOCTOR_CHECKS[@]}"; do
             IFS='|' read -r status name version desc details <<< "$check"
             printf "%-4s %-20s %-15s %-30s %s\n" "$status" "$name" "$version" "$desc" "$details"
-            
+
             case "$status" in
                 "✓") ((passed++)) || true ;;
                 "⚠") ((warnings++)) || true ;;
                 "✗") ((failed++)) || true ;;
             esac
         done
-        
+
         echo
         echo "汇总: 通过 $passed, 警告 $warnings, 失败 $failed"
-        
+
         if [[ $failed -gt 0 ]]; then
             echo
             log_error "发现 $failed 个关键问题，请解决后重试"
@@ -207,22 +207,22 @@ doctor_check() {
 
 doctor_fix() {
     log_info "尝试修复常见问题..."
-    
+
     if [[ ! -d "$AIAOS_CLI_DATA_DIR" ]]; then
         mkdir -p "$AIAOS_CLI_DATA_DIR"
         log_info "创建数据目录: $AIAOS_CLI_DATA_DIR"
     fi
-    
+
     if [[ ! -d "$AIAOS_CLI_CONFIG_DIR" ]]; then
         mkdir -p "$AIAOS_CLI_CONFIG_DIR"
         log_info "创建配置目录: $AIAOS_CLI_CONFIG_DIR"
     fi
-    
+
     if [[ ! -d "$AIAOS_CLI_CACHE_DIR" ]]; then
         mkdir -p "$AIAOS_CLI_CACHE_DIR"
         log_info "创建缓存目录: $AIAOS_CLI_CACHE_DIR"
     fi
-    
+
     if [[ ! -f "$AIAOS_CLI_CONFIG_DIR/cli.yaml" ]]; then
         cat > "$AIAOS_CLI_CONFIG_DIR/cli.yaml" <<EOF
 # AIAOS-CLI 配置文件
@@ -234,7 +234,7 @@ output_format: "table"
 EOF
         log_info "创建默认配置文件: $AIAOS_CLI_CONFIG_DIR/cli.yaml"
     fi
-    
+
     log_info "修复完成"
 }
 

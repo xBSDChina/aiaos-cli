@@ -182,7 +182,7 @@ __PY__
 
 config_list() {
     local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
@@ -191,9 +191,9 @@ config_list() {
             *) log_error "未知参数: $1"; exit 1 ;;
         esac
     done
-    
+
     ensure_config
-    
+
     if [[ "$format" == "json" ]]; then
         python3 -c "
 import yaml, json, os
@@ -234,7 +234,7 @@ config_edit() {
 
 config_validate() {
     local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
@@ -243,9 +243,9 @@ config_validate() {
             *) log_error "未知参数: $1"; exit 1 ;;
         esac
     done
-    
+
     ensure_config
-    
+
     local validation_result=$(python3 -c "
 import yaml, sys, os
 config_file = os.environ.get('CONFIG_FILE')
@@ -257,7 +257,7 @@ except Exception as e:
     print('INVALID: ' + str(e))
     sys.exit(1)
 " CONFIG_FILE="$CONFIG_FILE")
-    
+
     if [[ "$format" == "json" ]]; then
         python3 -c "
 import json
@@ -270,7 +270,7 @@ print(json.dumps({'status': 'success', 'message': '配置验证通过'}))
 
 config_migrate() {
     local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
@@ -279,9 +279,9 @@ config_migrate() {
             *) log_error "未知参数: $1"; exit 1 ;;
         esac
     done
-    
+
     ensure_config
-    
+
     local current_version=$(python3 -c "
 import yaml, os
 config_file = os.environ.get('CONFIG_FILE')
@@ -289,9 +289,9 @@ with open(config_file) as f:
     data = yaml.safe_load(f)
 print(data.get('version', '1.0'))
 " CONFIG_FILE="$CONFIG_FILE")
-    
+
     local target_version="1.0"
-    
+
     if [[ "$current_version" == "$target_version" ]]; then
         if [[ "$format" == "json" ]]; then
             python3 -c "
@@ -303,9 +303,9 @@ print(json.dumps({'status': 'success', 'message': '配置已是最新版本 (v$t
         fi
         return 0
     fi
-    
+
     log_info "迁移配置: v$current_version -> v$target_version"
-    
+
     python3 -c "
 import yaml, os
 config_file = os.environ.get('CONFIG_FILE')
@@ -315,7 +315,7 @@ data['version'] = '$target_version'
 with open(config_file, 'w') as f:
     yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
 " CONFIG_FILE="$CONFIG_FILE"
-    
+
     if [[ "$format" == "json" ]]; then
         python3 -c "
 import json
@@ -328,7 +328,7 @@ print(json.dumps({'status': 'success', 'message': '配置迁移完成', 'from': 
 
 config_reset() {
     local force=false format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --force) force=true; shift ;;
@@ -338,15 +338,15 @@ config_reset() {
             *) log_error "未知参数: $1"; exit 1 ;;
         esac
     done
-    
+
     if [[ "$force" != "true" ]]; then
         read -p "确定要重置配置吗? (y/N): " confirm
         [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { log_info "取消重置"; exit 0; }
     fi
-    
+
     rm -f "$CONFIG_FILE"
     ensure_config
-    
+
     if [[ "$format" == "json" ]]; then
         python3 -c "
 import json

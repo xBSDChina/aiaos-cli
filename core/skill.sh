@@ -72,7 +72,7 @@ print(json.dumps(data))
 skill_list() {
     local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
     local verbose=false
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --verbose) verbose=true; shift ;;
@@ -82,7 +82,7 @@ skill_list() {
             *) break ;;
         esac
     done
-    
+
     # R2052 (PERF-002): 合并原先 2N 次 python3 调用（N=技能数）为 1 次。
     # 根因：旧实现对每个 skill.yaml 各起 1 次 parse_skill_yaml（YAML->JSON）
     # 和 1 次 python3（JSON->表格行），python3 冷启动 ~100ms，
@@ -166,7 +166,7 @@ print(yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=Fa
 
 skill_install() {
     local source="" version="" force=false name=""
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --source) source="$2"; shift 2 ;;
@@ -175,7 +175,7 @@ skill_install() {
             --name) name="$2"; shift 2 ;;
             --name=*) name="${1#*=}"; shift ;;
             -h|--help) show_help; exit 0 ;;
-            *) 
+            *)
                 if [[ -z "$source" ]]; then
                     source="$1"
                 fi
@@ -183,53 +183,53 @@ skill_install() {
                 ;;
         esac
     done
-    
+
     [[ -z "$source" ]] && { log_error "需要安装源"; exit 1; }
-    
+
     local target_dir="${AIAOS_CLI_CONFIG_DIR}/skills"
     mkdir -p "$target_dir"
-    
+
     if [[ "$source" == http* || "$source" == git@* ]]; then
         local repo_name=$(basename "$source" .git)
         local skill_dir="$target_dir/$repo_name"
-        
+
         if [[ -d "$skill_dir" && "$force" != true ]]; then
             log_error "技能已存在: $repo_name (使用 --force 覆盖)"
             exit 1
         fi
-        
+
         log_info "克隆仓库: $source"
         git clone "$source" "$skill_dir" ${version:+--branch "$version"} --depth 1
-        
+
         if [[ ! -f "$skill_dir/skill.yaml" ]]; then
             log_error "无效的技能包: 缺少 skill.yaml"
             rm -rf "$skill_dir"
             exit 1
         fi
-        
+
         log_info "技能安装成功: $repo_name"
         output_result "success" "技能已安装" "name" "$repo_name" "path" "$skill_dir"
-        
+
     elif [[ -d "$source" ]]; then
         local skill_name=$(basename "$source")
         local skill_dir="$target_dir/$skill_name"
-        
+
         if [[ -d "$skill_dir" && "$force" != true ]]; then
             log_error "技能已存在: $skill_name (使用 --force 覆盖)"
             exit 1
         fi
-        
+
         cp -r "$source" "$skill_dir"
-        
+
         if [[ ! -f "$skill_dir/skill.yaml" ]]; then
             log_error "无效的技能包: 缺少 skill.yaml"
             rm -rf "$skill_dir"
             exit 1
         fi
-        
+
         log_info "技能安装成功: $skill_name"
         output_result "success" "技能已安装" "name" "$skill_name" "path" "$skill_dir"
-        
+
     else
         log_error "不支持的安装源: $source"
         exit 1
@@ -238,7 +238,7 @@ skill_install() {
 
 skill_uninstall() {
     local name="" force=false
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
@@ -248,9 +248,9 @@ skill_uninstall() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$name" ]] && { log_error "需要 --name 参数"; exit 1; }
-    
+
     local found=false
     for dir in "${SKILL_DIRS[@]}"; do
         local skill_dir="$dir/$name"
@@ -259,13 +259,13 @@ skill_uninstall() {
                 log_error "无法卸载内置技能: $name"
                 exit 1
             fi
-            
+
             if [[ "$force" != true ]]; then
                 read -p "确定卸载技能 $name? (y/N) " -n 1 -r
                 echo
                 [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "取消卸载"; exit 0; }
             fi
-            
+
             rm -rf "$skill_dir"
             log_info "技能已卸载: $name"
             output_result "success" "技能已卸载" "name" "$name"
@@ -273,13 +273,13 @@ skill_uninstall() {
             break
         fi
     done
-    
+
     if [[ "$found" == false ]]; then log_error "技能不存在: $name"; exit 1; fi
 }
 
 skill_update() {
     local name="" version=""
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
@@ -289,9 +289,9 @@ skill_update() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$name" ]] && { log_error "需要 --name 参数"; exit 1; }
-    
+
     local found=false
     for dir in "${SKILL_DIRS[@]}"; do
         local skill_dir="$dir/$name"
@@ -314,13 +314,13 @@ skill_update() {
             break
         fi
     done
-    
+
     if [[ "$found" == false ]]; then log_error "技能不存在: $name"; exit 1; fi
 }
 
 skill_search() {
     local query="" format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
@@ -328,14 +328,14 @@ skill_search() {
             *) query="$1"; shift ;;
         esac
     done
-    
+
     skill_list --format "$format"
 }
 
 # R880: 修复 Python 内插漏洞，使用 sys.argv 传递参数
 skill_enable() {
     local name=""
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
@@ -344,9 +344,9 @@ skill_enable() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$name" ]] && { log_error "需要 --name 参数"; exit 1; }
-    
+
     for dir in "${SKILL_DIRS[@]}"; do
         local skill_yaml="$dir/$name/skill.yaml"
         if [[ -f "$skill_yaml" ]]; then
@@ -363,7 +363,7 @@ with open(sys.argv[1], 'w') as f:
             return 0
         fi
     done
-    
+
     log_error "技能不存在: $name"
     exit 1
 }
@@ -371,7 +371,7 @@ with open(sys.argv[1], 'w') as f:
 # R880: 修复 Python 内插漏洞，使用 sys.argv 传递参数
 skill_disable() {
     local name=""
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
@@ -380,9 +380,9 @@ skill_disable() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$name" ]] && { log_error "需要 --name 参数"; exit 1; }
-    
+
     for dir in "${SKILL_DIRS[@]}"; do
         local skill_yaml="$dir/$name/skill.yaml"
         if [[ -f "$skill_yaml" ]]; then
@@ -399,7 +399,7 @@ with open(sys.argv[1], 'w') as f:
             return 0
         fi
     done
-    
+
     log_error "技能不存在: $name"
     exit 1
 }
@@ -407,7 +407,7 @@ with open(sys.argv[1], 'w') as f:
 skill_validate() {
     local name=""
     local fmt="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
@@ -418,9 +418,9 @@ skill_validate() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$name" ]] && { log_error "需要 --name 参数"; exit 1; }
-    
+
     for dir in "${SKILL_DIRS[@]}"; do
         local skill_yaml="$dir/$name/skill.yaml"
         if [[ -f "$skill_yaml" ]]; then
@@ -476,7 +476,7 @@ PYEOF
             return $?
         fi
     done
-    
+
     log_error "技能不存在: $name"
     exit 1
 }
@@ -484,7 +484,7 @@ PYEOF
 output_result() {
     local status="$1" message="$2"
     shift 2
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         local json="{\"status\":\"$status\",\"message\":\"$message\""
         while [[ $# -gt 0 ]]; do

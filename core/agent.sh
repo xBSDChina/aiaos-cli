@@ -34,7 +34,7 @@ EOF
 
 agent_chat() {
     local message="" session_id="" agent_name="default" format="${AIAOS_CLI_OUTPUT_FORMAT:-stream}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --message) message="$2"; shift 2 ;;
@@ -47,11 +47,11 @@ agent_chat() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$message" ]] && { log_error "需要 --message 参数"; exit 1; }
-    
+
     session_id="${session_id:-$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "default")}"
-    
+
     if [[ "$format" == "json" ]]; then
         python3 -c "
 import json, time, sys
@@ -78,7 +78,7 @@ print(json.dumps(response))
 
 agent_delegate() {
     local task="" session_id="" agent_name="default"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --task) task="$2"; shift 2 ;;
@@ -88,21 +88,21 @@ agent_delegate() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$task" ]] && { log_error "需要 --task 参数"; exit 1; }
-    
+
     session_id="${session_id:-$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "default")}"
-    
+
     log_info "委托任务给 Agent [$agent_name]: $task"
-    
+
     local task_id="task-$(date +%s)-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d " \n")"
-    
+
     output_result "success" "任务已委托" "task_id" "$task_id" "agent" "$agent_name" "session" "$session_id"
 }
 
 agent_tool() {
     local tool_name="" args="{}" session_id=""
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --tool) tool_name="$2"; shift 2 ;;
@@ -112,13 +112,13 @@ agent_tool() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$tool_name" ]] && { log_error "需要 --tool 参数"; exit 1; }
-    
+
     session_id="${session_id:-$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "default")}"
-    
+
     log_info "调用工具: $tool_name"
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         case "$tool_name" in
             read_file)
@@ -154,7 +154,7 @@ print(json.dumps({'status': 'success', 'path': sys.argv[1], 'files': files}, ens
                 ;;
             execute_command)
                 local cmd=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('command',''))")
-                eval "$cmd" 2>&1 | python3 -c "
+                bash -c "$cmd" 2>&1 | python3 -c "
 import json, sys
 print(json.dumps({'status': 'success', 'output': sys.stdin.read()}, ensure_ascii=False))
 "
@@ -185,7 +185,7 @@ print(json.dumps({'status': 'success', 'output': sys.stdin.read()}, ensure_ascii
                 ;;
             execute_command)
                 local cmd=$(echo "$args" | python3 -c "import json,sys; print(json.load(sys.stdin).get('command',''))")
-                eval "$cmd"
+                bash -c "$cmd"
                 ;;
             *)
                 output_result "error" "未知工具" "tool" "$tool_name"
@@ -196,7 +196,7 @@ print(json.dumps({'status': 'success', 'output': sys.stdin.read()}, ensure_ascii
 
 agent_history() {
     local session_id="" limit=20 format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --session) session_id="$2"; shift 2 ;;
@@ -208,16 +208,16 @@ agent_history() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     session_id="${session_id:-$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "default")}"
-    
+
     local history_file="${AIAOS_CLI_DATA_DIR}/sessions/$session_id.history.jsonl"
-    
+
     if [[ ! -f "$history_file" ]]; then
         output_result "info" "无历史记录" "session" "$session_id"
         return 0
     fi
-    
+
     if [[ "$format" == "json" ]]; then
         echo "["
         tail -n "$limit" "$history_file" | paste -sd, -
@@ -243,11 +243,11 @@ print(f"{ts:<20} {role:<10} {content}")
 
 agent_status() {
     local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     local status="running"
     local agents=("default" "coder" "reviewer" "architect")
     local current_agent="default"
-    
+
     local current_session
     current_session=$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "none")
     if [[ "$format" == "json" ]]; then
@@ -271,7 +271,7 @@ print(json.dumps({
 output_result() {
     local status="$1" message="$2"
     shift 2
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         local json="{\"status\":\"$status\",\"message\":\"$message\""
         while [[ $# -gt 0 ]]; do

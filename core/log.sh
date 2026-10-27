@@ -117,7 +117,7 @@ for line in sys.stdin:
 log_search() {
     local log_file=$(get_main_log)
     local pattern="" level="" since="" until="" limit=100 format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --file) log_file="$2"; shift 2 ;;
@@ -134,16 +134,16 @@ log_search() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -f "$log_file" ]] || { log_error "日志文件不存在: $log_file"; exit 1; }
-    
+
     local grep_cmd="grep"
     [[ -n "$pattern" ]] && grep_cmd+=" -E \"$pattern\""
     # R2105: JSON Lines 格式下，level 过滤改为 grep 字段值
     [[ -n "$level" ]] && grep_cmd+=" | grep -i \"\\\"level\\\":\\\"$level\\\"\""
-    
+
     local results=$(eval "$grep_cmd \"$log_file\" | tail -n \"$limit\"")
-    
+
     if [[ "$format" == "json" ]]; then
         echo "$results" | python3 -c "
 import json, sys
@@ -172,7 +172,7 @@ log_export() {
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" != "table" ]]; then
         format="$AIAOS_CLI_OUTPUT_FORMAT"
     fi
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --file) log_file="$2"; shift 2 ;;
@@ -183,10 +183,10 @@ log_export() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$output_file" ]] && output_file="$LOG_DIR/export-$(date +%Y%m%d-%H%M%S).$format"
     [[ -f "$log_file" ]] || { log_error "日志文件不存在: $log_file"; exit 1; }
-    
+
     # R2400 修复: 支持 jsonl 格式（每行一个 JSON 对象，与源日志一致）
     if [[ "$format" == "json" ]]; then
         python3 -c "
@@ -226,16 +226,16 @@ with open(sys.argv[1]) as f, open(sys.argv[2], 'w') as out:
     else
         cp "$log_file" "$output_file"
     fi
-    
+
     output_result "success" "日志已导出" "file" "$output_file" "format" "$format"
 }
 
 log_analyze() {
     local log_file=$(get_main_log)
     local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     [[ -f "$log_file" ]] || { log_error "日志文件不存在: $log_file"; exit 1; }
-    
+
     python3 -c "
 import json, sys
 from collections import Counter
@@ -296,7 +296,7 @@ else:
 
 log_list() {
     local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     if [[ "$format" == "json" ]]; then
         python3 -c "
 import json, os
@@ -328,7 +328,7 @@ print(json.dumps(files, indent=2))
 output_result() {
     local status="$1" message="$2"
     shift 2
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         local json="{\"status\":\"$status\",\"message\":\"$message\""
         while [[ $# -gt 0 ]]; do

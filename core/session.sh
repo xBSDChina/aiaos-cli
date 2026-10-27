@@ -42,7 +42,7 @@ generate_session_id() {
 
 session_new() {
     local name="" project="" description="" session_id="" format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
@@ -59,15 +59,15 @@ session_new() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     session_id="${session_id:-$(generate_session_id)}"
     name="${name:-session-$(date +%H%M%S)}"
     project="${project:-$PWD}"
     description="${description:-}"
-    
+
     local session_file="$SESSION_DIR/$session_id.yaml"
     local created_at=$(date -Iseconds)
-    
+
     cat > "$session_file" <<EOF
 id: "$session_id"
 name: "$name"
@@ -79,10 +79,10 @@ status: "active"
 context: {}
 history: []
 EOF
-    
+
     # 设置为当前会话
     echo "$session_id" > "$SESSION_DIR/.current"
-    
+
     if [[ "$format" == "json" ]]; then
         printf '{"status":"success","message":"会话创建成功","id":"%s","name":"%s","project":"%s"}\n' \
             "$session_id" "$name" "$project"
@@ -94,7 +94,7 @@ EOF
 session_list() {
     local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
     local sessions=()
-    
+
     for file in "$SESSION_DIR"/*.yaml; do
         [[ -f "$file" ]] || continue
         local id name project status created_at
@@ -105,7 +105,7 @@ session_list() {
         created_at=$(grep '^created_at:' "$file" | cut -d'"' -f2)
         sessions+=("$id|$name|$project|$status|$created_at")
     done
-    
+
     if [[ "$format" == "json" ]]; then
         local json="["
         local first=true
@@ -130,7 +130,7 @@ session_list() {
 
 session_show() {
     local session_id="" format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --id) session_id="$2"; shift 2 ;;
@@ -141,12 +141,12 @@ session_show() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$session_id" ]] && { log_error "需要 --id 参数"; exit 1; }
-    
+
     local session_file="$SESSION_DIR/$session_id.yaml"
     [[ -f "$session_file" ]] || { log_error "会话不存在: $session_id"; exit 1; }
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         # Convert YAML to JSON
         python3 -c "
@@ -161,7 +161,7 @@ print(json.dumps(data, ensure_ascii=False))" "$session_file"
 
 session_switch() {
     local session_id="" format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --id) session_id="$2"; shift 2 ;;
@@ -172,23 +172,23 @@ session_switch() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$session_id" ]] && { log_error "需要 --id 参数"; exit 1; }
-    
+
     local session_file="$SESSION_DIR/$session_id.yaml"
     [[ -f "$session_file" ]] || { log_error "会话不存在: $session_id"; exit 1; }
-    
+
     echo "$session_id" > "$SESSION_DIR/.current"
-    
+
     sed -i 's/^status:.*/status: "active"/' "$session_file"
     sed -i "s/^updated_at:.*/updated_at: \"$(date -Iseconds)\"/" "$session_file"
-    
+
     output_result "success" "已切换到会话" "id" "$session_id"
 }
 
 session_archive() {
     local session_id="" format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --id) session_id="$2"; shift 2 ;;
@@ -199,23 +199,23 @@ session_archive() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$session_id" ]] && { log_error "需要 --id 参数"; exit 1; }
-    
+
     local session_file="$SESSION_DIR/$session_id.yaml"
     [[ -f "$session_file" ]] || { log_error "会话不存在: $session_id"; exit 1; }
-    
+
     sed -i 's/^status:.*/status: "archived"/' "$session_file"
     sed -i "s/^updated_at:.*/updated_at: \"$(date -Iseconds)\"/" "$session_file"
-    
+
     [[ -f "$SESSION_DIR/.current" ]] && [[ "$(cat "$SESSION_DIR/.current")" == "$session_id" ]] && rm "$SESSION_DIR/.current"
-    
+
     output_result "success" "会话已归档" "id" "$session_id"
 }
 
 session_delete() {
     local session_id="" force=false format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --id) session_id="$2"; shift 2 ;;
@@ -227,22 +227,22 @@ session_delete() {
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
-    
+
     [[ -z "$session_id" ]] && { log_error "需要 --id 参数"; exit 1; }
-    
+
     local session_file="$SESSION_DIR/$session_id.yaml"
     [[ -f "$session_file" ]] || { log_error "会话不存在: $session_id"; exit 1; }
-    
+
     if [[ "$force" != true ]]; then
         read -p "确定删除会话 $session_id? (y/N) " -n 1 -r
         echo
         [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "取消删除"; exit 0; }
     fi
-    
+
     rm "$session_file"
-    
+
     [[ -f "$SESSION_DIR/.current" ]] && [[ "$(cat "$SESSION_DIR/.current")" == "$session_id" ]] && rm "$SESSION_DIR/.current"
-    
+
     output_result "success" "会话已删除" "id" "$session_id"
 }
 
@@ -272,7 +272,7 @@ print(json.dumps(data, ensure_ascii=False))" "$session_file"
 output_result() {
     local status="$1" message="$2"
     shift 2
-    
+
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         local json="{\"status\":\"$status\",\"message\":\"$message\""
         while [[ $# -gt 0 ]]; do
