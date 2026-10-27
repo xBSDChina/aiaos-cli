@@ -115,6 +115,41 @@ check_directory() {
     DOCTOR_CHECKS+=("$status|dir:$dir|$version|$desc|$details")
 }
 
+check_code_health() {
+    local elisp_dir="${AIAOS_CLI_ROOT:-$(dirname "${BASH_SOURCE[0]}")/..}/elisp"
+    local skills_dir="${AIAOS_CLI_ROOT:-$(dirname "${BASH_SOURCE[0]}")/..}/skills"
+    local issues=0 total_files=0
+
+    # 检查 elisp/*.el 的 lexical-binding 和 provide
+    if [[ -d "$elisp_dir" ]]; then
+        for f in "$elisp_dir"/*.el; do
+            [[ -f "$f" ]] || continue
+            total_files=$((total_files + 1))
+            local lb=$(grep -c "lexical-binding" "$f" 2>/dev/null || true)
+            local pr=$(grep -c "(provide" "$f" 2>/dev/null || true)
+            if [[ "$lb" -eq 0 ]]; then issues=$((issues + 1)); fi
+            if [[ "$pr" -eq 0 ]]; then issues=$((issues + 1)); fi
+        done
+    fi
+
+    # 检查 skills/*/commands/*.el 的 provide
+    if [[ -d "$skills_dir" ]]; then
+        for f in "$skills_dir"/*/commands/*.el; do
+            [[ -f "$f" ]] || continue
+            total_files=$((total_files + 1))
+            local pr=$(grep -c "(provide" "$f" 2>/dev/null || true)
+            if [[ "$pr" -eq 0 ]]; then issues=$((issues + 1)); fi
+        done
+    fi
+
+    if [[ "$issues" -eq 0 ]]; then
+        DOCTOR_CHECKS+=("✓|code-health|ok|代码规范|检查 ${total_files} 个 .el 文件全部合规")
+    else
+        DOCTOR_CHECKS+=("⚠|code-health|${issues}issues|代码规范|${issues} 个规范问题")
+    fi
+}
+
+
 doctor_check() {
     local verbose=false format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
 
@@ -187,6 +222,9 @@ except Exception:
             DOCTOR_CHECKS+=("✓|safety|default|安全配置|使用内置默认模式")
         fi
     fi
+
+    # R3000: 代码健康度扫描
+    check_code_health
 
     local passed=0 warnings=0 failed=0
 
