@@ -175,9 +175,12 @@ CMD is a list of strings.  Errors are signaled with `user-error'."
 CMD is a list of strings.  CALLBACK receives three args.
 R621 修复: 之前用 start-process 时 stderr 被丢弃，err-buf 永远为空。
 现在用 make-process + connection-type t + connection-function 真正分离
-stdout/stderr，让调用方（如 aiaos-cli-run）的失败分支能拿到 stderr。"
+stdout/stderr，让调用方（如 aiaos-cli-run）的失败分支能拿到 stderr。
+R2600 修复 (TD-003): 此前 aiaos-cli-async-timeout 变量已定义但从未使用，
+进程可能永远挂起。现在增加超时保护：超时后 kill 进程，
+以 status=124（类似 GNU coreutils timeout 的约定）调用 callback。"
   (let ((process-connection-type nil)
-        out-buf err-buf proc)
+        out-buf err-buf proc timer killed)
     (setq out-buf (get-buffer-create (format "*aiaos-cli-out-%s*" (random 1000000)))
           err-buf (get-buffer-create (format "*aiaos-cli-err-%s*" (random 1000000))))
     (setq proc (make-process
@@ -189,6 +192,7 @@ stdout/stderr，让调用方（如 aiaos-cli-run）的失败分支能拿到 stde
                 :sentinel
                 (lambda (p _event)
                   (when (memq (process-status p) '(signal exit))
+                    (cancel-timer timer)
                     (let ((status (process-exit-status p))
                           (out (with-current-buffer out-buf (buffer-string)))
                           (err (with-current-buffer err-buf (buffer-string))))
@@ -198,6 +202,23 @@ stdout/stderr，让调用方（如 aiaos-cli-run）的失败分支能拿到 stde
                           (funcall callback status out err)
                         (when (buffer-live-p err-buf)
                           (kill-buffer err-buf))))))))
+    ;; R2600: 超时保护 — 启动一个计时器，超时后 kill 进程并回调 status=124。
+    (when (and (natnump aiaos-cli-async-timeout) (> aiaos-cli-async-timeout 0))
+      (setq timer
+            (run-with-timer aiaos-cli-async-timeout nil
+              (lambda ()
+                (when (and (process-live-p proc) (not killed))
+                  (setq killed t)
+                  (let ((status 124)
+                        (out (with-current-buffer out-buf (buffer-string)))
+                        (err (format "Timeout: process killed after %d seconds"
+                                     aiaos-cli-async-timeout)))
+                    (kill-buffer out-buf)
+                    (kill-process proc)
+                    (unwind-protect
+                        (funcall callback status out err)
+                      (when (buffer-live-p err-buf)
+                        (kill-buffer err-buf))))))))))
     proc))
 
 (defun aiaos-cli--parse-json (str)

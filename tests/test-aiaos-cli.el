@@ -487,3 +487,37 @@ cache 应包含该技能的元数据条目。"
       (goto-char (point-min))
       (should (re-search-forward "(defun aiaos-cli-agent-send" nil t))
       (should (re-search-forward "aiaos-cli--call-async" nil t)))))
+
+(ert-deftest aiaos-cli-test/call-async-timeout-defined ()
+  "R2600 (TD-003): aiaos-cli-async-timeout must be a positive integer.
+
+Previously the variable was defined but never used — processes could
+hang forever. After R2600, the timeout must be a valid positive integer
+so the timer in aiaos-cli--call-async can actually fire."
+  (should (boundp 'aiaos-cli-async-timeout))
+  (should (integerp aiaos-cli-async-timeout))
+  (should (> aiaos-cli-async-timeout 0)))
+
+(ert-deftest aiaos-cli-test/call-async-has-timeout-protection ()
+  "R2600 (TD-003): aiaos-cli--call-async must include timeout protection.
+
+The function source must contain:
+  - run-with-timer with aiaos-cli-async-timeout
+  - A kill-process call in the timeout handler
+  - Status code 124 (GNU coreutils timeout convention)"
+  (let ((file (locate-file "aiaos-cli.el" load-path)))
+    (should file)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      ;; Must find the function
+      (should (re-search-forward "(defun aiaos-cli--call-async" nil t))
+      ;; Must use run-with-timer for timeout
+      (should (re-search-forward "run-with-timer" nil t))
+      ;; Must reference the timeout variable
+      (should (re-search-forward "aiaos-cli-async-timeout" nil t))
+      ;; Must kill process on timeout
+      (should (re-search-forward "kill-process" nil t))
+      ;; Must use status 124 (timeout convention) — reset to function start
+      (goto-char (point-min))
+      (should (re-search-forward "124" nil t)))))
