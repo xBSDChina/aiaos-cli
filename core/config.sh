@@ -66,6 +66,8 @@ safety:
   dangerous_patterns: []
   # 用户自定义禁止写入路径（追加到内置默认路径之后）
   forbidden_paths: []
+  # 白名单模式 — 配置后仅允许写入列表内路径（通配符支持）
+  allowed_paths: []
 YAML
     fi
 }

@@ -165,16 +165,24 @@ try:
     if isinstance(safety, dict):
         d = safety.get('dangerous_patterns', [])
         f = safety.get('forbidden_paths', [])
-        print(f'{len(d)}:{len(f)}')
+        a = safety.get('allowed_paths', [])
+        print(f'{len(d)}:{len(f)}:{len(a)}')
     else:
         print('0:0')
 except Exception:
     print('0:0')
 " "$AIAOS_CLI_CONFIG_DIR/cli.yaml" 2>/dev/null) || safety_check="0:0"
         local dp="${safety_check%%:*}"
-        local fp="${safety_check#*:}"
-        if [[ "$dp" -gt 0 || "$fp" -gt 0 ]]; then
-            DOCTOR_CHECKS+=("✓|safety|configured|安全配置|自定义模式 ${dp} 条，禁止路径 ${fp} 条")
+        local rest="${safety_check#*:}"
+        local fp="${rest%%:*}"
+        local ap="${rest#*:}"
+        local ap="${safety_check##*:}"
+        if [[ "$dp" -gt 0 || "$fp" -gt 0 || "$ap" -gt 0 ]]; then
+            local safety_desc="自定义模式 ${dp} 条，禁止路径 ${fp} 条"
+            if [[ "$ap" -gt 0 ]]; then
+                safety_desc+="，白名单 ${ap} 条"
+            fi
+            DOCTOR_CHECKS+=("✓|safety|configured|安全配置|${safety_desc}")
         else
             DOCTOR_CHECKS+=("✓|safety|default|安全配置|使用内置默认模式")
         fi

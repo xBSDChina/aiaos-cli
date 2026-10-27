@@ -76,6 +76,28 @@ except Exception:
             SAFETY_PATTERNS="$builtin_dangerous"
             SAFETY_FORBIDDEN="$builtin_forbidden"
         fi
+    # R4003: 加载白名单模式（allowed_paths 为空时不启用）
+    ALLOWED_PATHS=""
+    if [[ -f "$config_file" ]]; then
+        local allowed
+        allowed=$(python3 -c "
+import yaml, sys
+try:
+    with open(sys.argv[1]) as f:
+        cfg = yaml.safe_load(f) or {}
+    safety = cfg.get('safety', {})
+    ap = safety.get('allowed_paths', [])
+    if isinstance(ap, list) and ap:
+        print('|'.join(ap))
+    else:
+        print('')
+except Exception:
+    print('')
+" "$config_file" 2>/dev/null) || allowed=""
+        if [[ -n "$allowed" ]]; then
+            ALLOWED_PATHS="$allowed"
+        fi
+    fi
     else
         SAFETY_PATTERNS="$builtin_dangerous"
         SAFETY_FORBIDDEN="$builtin_forbidden"
@@ -98,6 +120,35 @@ check_dangerous_command() {
 validate_write_path() {
     local path="$1"
     _load_safety_config
+    # R4003: 白名单模式 — 配置了 allowed_paths 时，路径必须在白名单内
+    if [[ -n "$ALLOWED_PATHS" ]]; then
+        local in_whitelist=false
+        IFS='|' read -ra WHITELIST <<< "$ALLOWED_PATHS"
+        for wl in "${WHITELIST[@]}"; do
+            # 规范化：去除尾部斜杠
+            wl_clean="${wl%/}"
+            # 匹配逻辑：
+            # 1. 精确匹配：path == wl_clean
+            # 2. 目录匹配：path 以 wl_clean/ 开头
+            # 3. 通配符匹配：wl 包含 * 时用 glob
+            if [[ "$wl" == *"*"* ]]; then
+                if [[ "$path" == $wl ]]; then
+                    in_whitelist=true
+                    break
+                fi
+            elif [[ "$path" == "$wl_clean" ]] || [[ "$path" == "$wl_clean"/* ]]; then
+                in_whitelist=true
+                break
+            fi
+        done
+        if [[ "$in_whitelist" == false ]]; then
+            log_error "路径不在白名单内"
+            log_warn "白名单: $ALLOWED_PATHS"
+            log_warn "尝试写入: $path"
+            return 1
+        fi
+    fi
+    # 黑名单模式 — 即使在白名单内，系统关键目录仍禁止
     if echo "$path" | grep -qE "$SAFETY_FORBIDDEN"; then
         log_error "禁止写入系统关键目录"
         log_warn "受限路径: $path"
