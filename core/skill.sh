@@ -654,6 +654,12 @@ PYM
     [[ -f "$entry_file" ]] || { log_error "入口文件不存在: $entry_file"; exit 1; }
 
     local emacs_bin="${AIAOS_CLI_EMACS:-emacs}"
+    # R1323: 兜底定义 elisp_dir，防止直接 source skill.sh 时变量未绑定
+    local elisp_dir="${AIAOS_CLI_ELISP_DIR:-}"
+    if [[ -z "$elisp_dir" ]]; then
+        local _cli_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        elisp_dir="$_cli_root/elisp"
+    fi
     command -v "$emacs_bin" >/dev/null 2>&1 || { log_error "emacs 未找到"; exit 1; }
 
     # 生成临时 elisp 脚本，避免 shell/emacs 双重转义
@@ -718,7 +724,7 @@ PYGEN
         local result rc=0
         # R1100 (P0): set -e 下命令替换非零会直接终止子 shell，错误分支永远
         # 执行不到（R900 静默失败的真正根源）。用 `|| rc=$?` 显式接住退出码。
-        result=$("$emacs_bin" --batch -L "$AIAOS_CLI_ELISP_DIR" -l aiaos-cli --load "$tmp_el" 2>"$err_file") || rc=$?
+        result=$("$emacs_bin" --batch -L "$elisp_dir" -l aiaos-cli --load "$tmp_el" 2>"$err_file") || rc=$?
 
         if [[ $rc -ne 0 ]]; then
             # R1322 (TD-033): 提取真实错误信息，过滤 Emacs 启动日志
