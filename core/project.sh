@@ -26,13 +26,19 @@ show_help() {
 EOF
 }
 
-log_info() {
-    echo "[INFO] $*"
-}
+# 使用主 CLI 导出的日志函数（如果可用），否则定义本地备用
+# 注意：备用版本输出到 stderr，避免污染 --format json 的 stdout 输出
+if ! declare -f log_info >/dev/null 2>&1; then
+    log_info() {
+        echo "[INFO] $*" >&2
+    }
+fi
 
-log_error() {
-    echo "[ERROR] $*" >&2
-}
+if ! declare -f log_error >/dev/null 2>&1; then
+    log_error() {
+        echo "[ERROR] $*" >&2
+    }
+fi
 
 generate_id() {
     date +%s%N | sha256sum | head -c 12
@@ -82,12 +88,12 @@ print(json.dumps({
 }, ensure_ascii=False))
 "
     else
-        log_info "项目已初始化: $name" >log_info "项目已初始化: $name"2
+        log_info "项目已初始化: $name"
     fi
 }
 
 project_sync() {
-    log_info "同步项目配置" >log_info "同步项目配置"2
+    log_info "同步项目配置"
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         python3 -c "
 import json
@@ -97,12 +103,12 @@ print(json.dumps({
 }, ensure_ascii=False))
 "
     else
-        log_info "项目配置已同步" >log_info "项目配置已同步"2
+        log_info "项目配置已同步"
     fi
 }
 
 project_build() {
-    log_info "构建项目" >log_info "构建项目"2
+    log_info "构建项目"
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         python3 -c "
 import json
@@ -112,7 +118,7 @@ print(json.dumps({
 }, ensure_ascii=False))
 "
     else
-        log_info "项目构建完成" >log_info "项目构建完成"2
+        log_info "项目构建完成"
     fi
 }
 
@@ -128,7 +134,7 @@ project_deploy() {
         esac
     done
 
-    log_info "部署项目到 $target ($env)" >log_info "部署项目到 $target ($env)"2
+    log_info "部署项目到 $target ($env)"
     if [[ "${AIAOS_CLI_OUTPUT_FORMAT:-table}" == "json" ]]; then
         python3 -c "
 import json
@@ -140,7 +146,7 @@ print(json.dumps({
 }, ensure_ascii=False))
 "
     else
-        log_info "项目部署完成" >log_info "项目部署完成"2
+        log_info "项目部署完成"
     fi
 }
 
