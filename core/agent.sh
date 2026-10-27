@@ -32,25 +32,72 @@ show_help() {
 EOF
 }
 
-# 安全检查：检测危险命令
+# 安全检查：从配置文件加载危险命令模式（R4001）
+# 内置默认模式始终生效，用户可通过 cli.yaml 的 safety.dangerous_patterns 追加自定义模式
+_load_safety_config() {
+    if [[ -n "${SAFETY_PATTERNS:-}" ]]; then
+        return 0
+    fi
+    # 内置默认危险命令模式（始终生效，不可移除）
+    local builtin_dangerous='rm\s+-rf?\s+/|dd\s+if=|mkfs|:\(\)\s*\{|>\s*/dev/sd|chmod\s+-R\s+777\s+/|curl.*\|.*bash|wget.*\|.*sh'
+    # 内置默认禁止写入路径（始终生效，不可移除）
+    local builtin_forbidden='/etc/|/bin/|/sbin/|/usr/|/boot/|/sys/|/proc/'
+    
+    local config_file="${AIAOS_CLI_CONFIG_DIR:-$HOME/.config/aiaos}/cli.yaml"
+    
+    if [[ -f "$config_file" ]]; then
+        local result
+        result=$(python3 -c "
+import yaml, sys
+builtin_d = r'rm\s+-rf?\s+/|dd\s+if=|mkfs|:\(\)\s*\{|>\s*/dev/sd|chmod\s+-R\s+777\s+/|curl.*\|.*bash|wget.*\|.*sh'
+builtin_f = r'/etc/|/bin/|/sbin/|/usr/|/boot/|/sys/|/proc/'
+try:
+    with open(sys.argv[1]) as f:
+        cfg = yaml.safe_load(f) or {}
+    safety = cfg.get('safety', {})
+    user_d = safety.get('dangerous_patterns', [])
+    user_f = safety.get('forbidden_paths', [])
+    combined_d = builtin_d
+    if user_d:
+        combined_d += '|' + '|'.join(user_d)
+    combined_f = builtin_f
+    if user_f:
+        combined_f += '|' + '|'.join(user_f)
+    print(combined_d + '||' + combined_f)
+except Exception:
+    print(builtin_d + '||' + builtin_f)
+" "$config_file" 2>/dev/null) || result=""
+        
+        if [[ -n "$result" ]]; then
+            SAFETY_PATTERNS="${result%%||*}"
+            SAFETY_FORBIDDEN="${result#*||}"
+        else
+            SAFETY_PATTERNS="$builtin_dangerous"
+            SAFETY_FORBIDDEN="$builtin_forbidden"
+        fi
+    else
+        SAFETY_PATTERNS="$builtin_dangerous"
+        SAFETY_FORBIDDEN="$builtin_forbidden"
+    fi
+}
+
+# 安全检查：检测危险命令（支持用户自定义模式）
 check_dangerous_command() {
     local cmd="$1"
-    # 检测常见危险命令
-    local dangerous_patterns='rm\s+-rf?\s+/|dd\s+if=|mkfs|:\(\)\s*\{|>\s*/dev/sd|chmod\s+-R\s+777\s+/|curl.*\|.*bash|wget.*\|.*sh'
-    if echo "$cmd" | grep -qE "$dangerous_patterns"; then
+    _load_safety_config
+    if echo "$cmd" | grep -qE "$SAFETY_PATTERNS"; then
         log_error "检测到危险命令，已拒绝执行"
-        log_warn "禁止的命令模式: $dangerous_patterns"
+        log_warn "禁止的命令模式: $SAFETY_PATTERNS"
         return 1
     fi
     return 0
 }
 
-# 安全检查：验证写入路径
+# 安全检查：验证写入路径（支持用户自定义禁止路径）
 validate_write_path() {
     local path="$1"
-    # 禁止写入系统关键目录
-    local forbidden_dirs='/etc/|/bin/|/sbin/|/usr/|/boot/|/sys/|/proc/'
-    if echo "$path" | grep -qE "$forbidden_dirs"; then
+    _load_safety_config
+    if echo "$path" | grep -qE "$SAFETY_FORBIDDEN"; then
         log_error "禁止写入系统关键目录"
         log_warn "受限路径: $path"
         return 1

@@ -154,6 +154,30 @@ doctor_check() {
         DOCTOR_CHECKS+=("⚠|config|missing|配置文件|将使用默认配置")
     else
         DOCTOR_CHECKS+=("✓|config|exists|配置文件|已存在")
+        # R4001: 检查 safety 配置节
+        local safety_check
+        safety_check=$(python3 -c "
+import yaml, sys
+try:
+    with open(sys.argv[1]) as f:
+        cfg = yaml.safe_load(f) or {}
+    safety = cfg.get('safety', {})
+    if isinstance(safety, dict):
+        d = safety.get('dangerous_patterns', [])
+        f = safety.get('forbidden_paths', [])
+        print(f'{len(d)}:{len(f)}')
+    else:
+        print('0:0')
+except Exception:
+    print('0:0')
+" "$AIAOS_CLI_CONFIG_DIR/cli.yaml" 2>/dev/null) || safety_check="0:0"
+        local dp="${safety_check%%:*}"
+        local fp="${safety_check#*:}"
+        if [[ "$dp" -gt 0 || "$fp" -gt 0 ]]; then
+            DOCTOR_CHECKS+=("✓|safety|configured|安全配置|自定义模式 ${dp} 条，禁止路径 ${fp} 条")
+        else
+            DOCTOR_CHECKS+=("✓|safety|default|安全配置|使用内置默认模式")
+        fi
     fi
 
     local passed=0 warnings=0 failed=0

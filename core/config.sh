@@ -61,6 +61,11 @@ project:
 logging:
   level: "info"
   file: "~/.local/share/aiaos/logs/cli.log"
+safety:
+  # 用户自定义危险命令模式（追加到内置默认模式之后）
+  dangerous_patterns: []
+  # 用户自定义禁止写入路径（追加到内置默认路径之后）
+  forbidden_paths: []
 YAML
     fi
 }
