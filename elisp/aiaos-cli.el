@@ -201,7 +201,7 @@ R2600 修复 (TD-003): 此前 aiaos-cli-async-timeout 变量已定义但从未�
                       (unwind-protect
                           (funcall callback status out err)
                         (when (buffer-live-p err-buf)
-                          (kill-buffer err-buf))))))))
+                        (kill-buffer err-buf))))))))
     ;; R2600: 超时保护 — 启动一个计时器，超时后 kill 进程并回调 status=124。
     (when (and (natnump aiaos-cli-async-timeout) (> aiaos-cli-async-timeout 0))
       (setq timer
@@ -218,7 +218,7 @@ R2600 修复 (TD-003): 此前 aiaos-cli-async-timeout 变量已定义但从未�
                     (unwind-protect
                         (funcall callback status out err)
                       (when (buffer-live-p err-buf)
-                        (kill-buffer err-buf))))))))))
+                        (kill-buffer err-buf)))))))))
     proc))
 
 (defun aiaos-cli--parse-json (str)
