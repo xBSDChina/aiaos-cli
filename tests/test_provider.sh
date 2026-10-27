@@ -156,6 +156,29 @@ test_contains "use nonexistent returns JSON error" "unknown provider" "$out"
 test_not_contains "no Python traceback" "Traceback" "$out"
 test_not_contains "no KeyError raw" "KeyError" "$out"
 
+# Test 17: TD-004 fallback-order 覆盖写入（不产生重复行）
+echo ""
+echo "--- Test 17: TD-004 fallback-order 覆盖写入 ---"
+cfg_dir="$AIAOS_CLI_CONFIG_DIR"
+mkdir -p "$cfg_dir"
+# 先设置一次
+$CLI_BIN provider fallback-order agnes,sensenova >/dev/null 2>&1 || true
+# 再设置一次（覆盖）
+$CLI_BIN provider fallback-order cn,red >/dev/null 2>&1 || true
+# 检查 provider.yaml 中 fallback_order 行数
+order_count=$(grep -c "^fallback_order:" "$cfg_dir/provider.yaml" 2>/dev/null || echo 0)
+test_assert "fallback_order 无重复行" "1" "$order_count"
+# 检查内容
+order_val=$(grep "^fallback_order:" "$cfg_dir/provider.yaml" | head -1 | cut -d: -f2 | tr -d ' ')
+test_assert "fallback_order 值为最新" "cn,red" "$order_val"
+
+# Test 18: TD-004 report 读取持久化 fallback_order
+echo ""
+echo "--- Test 18: TD-004 report 读取持久化 fallback_order ---"
+out=$($CLI_BIN provider report --format json 2>&1) || true
+test_contains "report 包含 fallback_order" "fallback_order" "$out"
+test_contains "report 包含持久化值" "cn" "$out"
+
 echo ""
 echo "======================================"
 echo "Provider 测试总结"

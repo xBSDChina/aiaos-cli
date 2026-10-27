@@ -186,9 +186,16 @@ def main():
         order = [p.strip() for p in order_str.split(",") if p.strip()]
         reg = get_default_registry(audit_log_path=os.environ.get("AIAOS_AUDIT_LOG"))
         reg.set_fallback_order(order)
+        # TD-004: 覆盖模式写入，与 fallback 命令一致，避免重复行
         cfg = os.environ.get("AIAOS_CLI_CONFIG_DIR", os.path.expanduser("~/.config/aiaos"))
         os.makedirs(cfg, exist_ok=True)
-        with open(os.path.join(cfg, "provider.yaml"), "a") as f:
+        cfg_path = os.path.join(cfg, "provider.yaml")
+        old_lines = []
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                old_lines = [l for l in f if not l.startswith("fallback_order:")]
+        with open(cfg_path, "w") as f:
+            f.writelines(old_lines)
             f.write(f"fallback_order: {order_str}\n")
         print(f"fallback order -> {order}")
         return
@@ -245,12 +252,18 @@ def main():
         cfg = os.environ.get("AIAOS_CLI_CONFIG_DIR", os.path.expanduser("~/.config/aiaos"))
         cfg_path = os.path.join(cfg, "provider.yaml")
         persisted_strategy = "sequential"
+        persisted_order = None
         if os.path.exists(cfg_path):
             with open(cfg_path) as f:
                 for line in f:
                     if line.startswith("fallback_strategy:"):
                         persisted_strategy = line.split(":", 1)[1].strip()
-                        break
+                    if line.startswith("fallback_order:"):
+                        persisted_order = line.split(":", 1)[1].strip()
+        # TD-004: 恢复持久化的 fallback_order（跨会话）
+        if persisted_order:
+            order_list = [p.strip() for p in persisted_order.split(",") if p.strip()]
+            reg.set_fallback_order(order_list)
         router = FallbackRouter(reg, strategy=FallbackStrategy(persisted_strategy))
         emit(router.report())
         return
