@@ -1,0 +1,39 @@
+name: base64-tools
+version: 1.0.0
+description: AIAOS-CLI Base64编解码工具技能包：Base64编码、解码
+author: AIAOS Project
+license: MIT
+keywords:
+  - base64
+  - encoding
+  - decoding
+dependencies:
+  system:
+    - emacs>=29
+  core: '>=1.0.0'
+  skills: []
+commands:
+  - name: encode
+    description: Base64编码
+    entry: commands/encode.el
+    args:
+      - name: text
+        type: string
+        required: true
+        description: 待编码的文本
+  - name: decode
+    description: Base64解码
+    entry: commands/decode.el
+    args:
+      - name: text
+        type: string
+        required: true
+        description: 待解码的Base64文本
+hooks:
+  on-load: hooks/on-load.el
+  pre-command: hooks/pre-command.el
+  post-command: hooks/post-command.el
+templates: []
+schemas: []
+resources: []
+disabled: false
