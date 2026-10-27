@@ -118,34 +118,30 @@ check_directory() {
 check_code_health() {
     local elisp_dir="${AIAOS_CLI_ROOT:-$(dirname "${BASH_SOURCE[0]}")/..}/elisp"
     local skills_dir="${AIAOS_CLI_ROOT:-$(dirname "${BASH_SOURCE[0]}")/..}/skills"
-    local issues=0 total_files=0
+    local script_dir="$(dirname "${BASH_SOURCE[0]}")"
+    local py_script="$script_dir/code_health.py"
 
-    # 检查 elisp/*.el 的 lexical-binding 和 provide
-    if [[ -d "$elisp_dir" ]]; then
-        for f in "$elisp_dir"/*.el; do
-            [[ -f "$f" ]] || continue
-            total_files=$((total_files + 1))
-            local lb=$(grep -c "lexical-binding" "$f" 2>/dev/null || true)
-            local pr=$(grep -c "(provide" "$f" 2>/dev/null || true)
-            if [[ "$lb" -eq 0 ]]; then issues=$((issues + 1)); fi
-            if [[ "$pr" -eq 0 ]]; then issues=$((issues + 1)); fi
-        done
-    fi
+    local result
+    result=$(python3 "$py_script" "$elisp_dir" "$skills_dir" 2>&1) || {
+        DOCTOR_CHECKS+=("⚠|code-health|error|代码规范|检查脚本执行失败")
+        return 1
+    }
 
-    # 检查 skills/*/commands/*.el 的 provide
-    if [[ -d "$skills_dir" ]]; then
-        for f in "$skills_dir"/*/commands/*.el; do
-            [[ -f "$f" ]] || continue
-            total_files=$((total_files + 1))
-            local pr=$(grep -c "(provide" "$f" 2>/dev/null || true)
-            if [[ "$pr" -eq 0 ]]; then issues=$((issues + 1)); fi
-        done
-    fi
+    local issue_count
+    local file_count
+    local problem_details
 
-    if [[ "$issues" -eq 0 ]]; then
-        DOCTOR_CHECKS+=("✓|code-health|ok|代码规范|检查 ${total_files} 个 .el 文件全部合规")
+    issue_count=$(echo "$result" | cut -d'|' -f1)
+    file_count=$(echo "$result" | cut -d'|' -f2)
+    problem_details=$(echo "$result" | cut -d'|' -f3-)
+
+    if [[ "$issue_count" -eq 0 ]]; then
+        DOCTOR_CHECKS+=("✓|code-health|ok|代码规范|检查 ${file_count} 个 .el 文件全部合规")
     else
-        DOCTOR_CHECKS+=("⚠|code-health|${issues}issues|代码规范|${issues} 个规范问题")
+        DOCTOR_CHECKS+=("⚠|code-health|${issue_count}issues|代码规范|${issue_count} 个规范问题")
+        if [[ -n "$problem_details" ]]; then
+            echo "$problem_details" >&2
+        fi
     fi
 }
 
