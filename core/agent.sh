@@ -104,6 +104,29 @@ except Exception:
     fi
 }
 
+# R4004: 审计日志 — 记录工具调用的关键操作
+_audit_log() {
+    local tool="$1" detail="$2" session="$3" status="$4" allow_dangerous="$5"
+    local audit_file="${AIAOS_CLI_DATA_DIR}/logs/audit.log"
+    local timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    local msg_escaped=$(python3 -c "import json; print(json.dumps(json.loads('"'+'"'.join('"$detail"'.replace('\\','\\\\')))))" 2>/dev/null || echo '"'"$detail"'"')
+    # 简化：直接构造 JSON Lines
+    local entry
+    entry=$(python3 -c "
+import json, sys
+entry = {
+    'tool': sys.argv[1],
+    'detail': sys.argv[2],
+    'session': sys.argv[3],
+    'status': sys.argv[4],
+    'allow_dangerous': sys.argv[5] == 'true',
+    'timestamp': sys.argv[6]
+}
+print(json.dumps(entry))
+" "$tool" "$detail" "$session" "$status" "$allow_dangerous" "$timestamp")
+    echo "$entry" >> "$audit_file"
+}
+
 # 安全检查：检测危险命令（支持用户自定义模式）
 check_dangerous_command() {
     local cmd="$1"
@@ -255,10 +278,14 @@ agent_tool_write_file() {
         if [[ "$format" == "json" ]]; then
             output_result "error" "路径受限" "path" "$path"
         fi
+        # R4004: 审计日志 — 记录文件写入拦截
+        _audit_log "write_file" "$path" "$session_id" "denied" "$allow_dangerous"
         return 1
     fi
     mkdir -p "$(dirname "$path")" 2>/dev/null || true
     echo "$content" > "$path"
+    # R4004: 审计日志 — 记录文件写入
+    _audit_log "write_file" "$path" "$session_id" "success" "$allow_dangerous"
     if [[ "$format" == "json" ]]; then
         output_result "success" "文件已写入" "path" "$path"
     else
