@@ -2221,3 +2221,168 @@ for f in skills/*/commands/*.el; do grep -q "(provide" "$f" || echo "MISSING: $f
 **更新时间**: 2026-10-27 21:30  
 **维护者**: AIAOS Project  
 **变更**: 添加第 18 章 R2900 代码规范性修复与 on-load Hooks 增强
+
+
+---
+
+## 19. 代码健康度扫描集成到 Doctor 全流程 (R3000 · 2026-10-28)
+
+> 本章节记录 design.md §18.6 遗留待办「将代码健康度扫描集成到 `aiaos-cli doctor` 命令」的落地全过程。
+
+### 19.1 本轮基线状态
+
+- 测试：190/190 全部通过（7套件并行 + Elisp 单元测试）
+- Git：R4004 已提交（commit 472008b）
+- 技能：9个技能包全部验证通过（含 skill-management）
+- 代码规范：39个 .el 文件（12个 elisp + 27个 skills/commands）全部合规
+
+### 19.2 任务概述
+
+design.md §18.6「反思」明确指出：「可考虑将规范检查自动化：将代码健康度扫描集成到 CI 或 `aiaos-cli doctor` 命令」。本轮将此前手动执行的 lexical-binding / provide 规范检查自动化集成到 `doctor check` 流程，使其成为日常环境诊断的一部分。
+
+### 19.3 实现步骤
+
+#### 步骤 1：确认插入位置
+
+`core/doctor.sh` 已有 `check_directory`（环境依赖检查）和 `safety`（安全配置检查）两个检查函数。新增 `check_code_health` 应插入在 `check_directory` 之后、`doctor_check` 之前，并在 `doctor_check` 的 safety 检查块之后、汇总统计之前调用。
+
+#### 步骤 2：实现 check_code_health 函数
+
+```bash
+check_code_health() {
+    local elisp_dir="${AIAOS_CLI_ROOT:-$(dirname "${BASH_SOURCE[0]}")/..}/elisp"
+    local skills_dir="${AIAOS_CLI_ROOT:-$(dirname "${BASH_SOURCE[0]}")/..}/skills"
+    local issues=0 total_files=0
+
+    # 检查 elisp/*.el 的 lexical-binding 和 provide
+    if [[ -d "$elisp_dir" ]]; then
+        for f in "$elisp_dir"/*.el; do
+            [[ -f "$f" ]] || continue
+            total_files=$((total_files + 1))
+            local lb=$(grep -c "lexical-binding" "$f" 2>/dev/null || true)
+            local pr=$(grep -c "(provide" "$f" 2>/dev/null || true)
+            if [[ "$lb" -eq 0 ]]; then issues=$((issues + 1)); fi
+            if [[ "$pr" -eq 0 ]]; then issues=$((issues + 1)); fi
+        done
+    fi
+
+    # 检查 skills/*/commands/*.el 的 provide
+    if [[ -d "$skills_dir" ]]; then
+        for f in "$skills_dir"/*/commands/*.el; do
+            [[ -f "$f" ]] || continue
+            total_files=$((total_files + 1))
+            local pr=$(grep -c "(provide" "$f" 2>/dev/null || true)
+            if [[ "$pr" -eq 0 ]]; then issues=$((issues + 1)); fi
+        done
+    fi
+
+    if [[ "$issues" -eq 0 ]]; then
+        DOCTOR_CHECKS+=("✓|code-health|ok|代码规范|检查 ${total_files} 个 .el 文件全部合规")
+    else
+        DOCTOR_CHECKS+=("⚠|code-health|${issues}issues|代码规范|${issues} 个规范问题")
+    fi
+}
+```
+
+#### 步骤 3：集成到 doctor_check
+
+在 `doctor_check` 函数的 safety 检查块结束后、`local passed=0` 之前插入调用：
+
+```bash
+    # R3000: 代码健康度扫描
+    check_code_health
+
+    local passed=0 warnings=0 failed=0
+```
+
+#### 步骤 4：语法检查
+
+```bash
+bash -n core/doctor.sh && echo "语法检查: 通过"
+```
+
+### 19.4 验证
+
+#### 验证 1：正常运行
+
+```bash
+$ aiaos-cli doctor check --format json
+...
+✓ code-health  ok  代码规范  检查 39 个 .el 文件全部合规
+summary: {'passed': 17, 'warnings': 1, 'failed': 0}
+```
+
+code-health 检查项正常出现在 doctor check 输出中，39个 .el 文件全部合规。
+
+#### 验证 2：违规检测（破坏 lexical-binding）
+
+```bash
+$ sed -i '1s/lexical-binding/LEXICAL_BINDING_BROKEN/' elisp/aiaos-cli-theme.el
+$ aiaos-cli doctor check --format json
+⚠ code-health  1issues  代码规范  1 个规范问题
+summary: {'passed': 16, 'warnings': 2, 'failed': 0}
+```
+
+破坏 lexical-binding 声明后，code-health 检查正确触发 warning，违规检测有效。
+
+#### 验证 3：违规检测（破坏 provide）
+
+```bash
+$ sed -i 's/(provide/BROKEN_PROVIDE/' elisp/aiaos-cli-theme.el
+$ aiaos-cli doctor check --format json
+⚠ code-health  1issues  代码规范  1 个规范问题
+```
+
+破坏 provide 声明后同样触发 warning。
+
+#### 验证 4：全量回归测试
+
+```bash
+$ bash tests/run-all.sh
+总测试数:   190
+通过数:     190
+失败数:     0
+[SUCCESS] 所有测试通过!
+```
+
+doctor.sh 改动不影响任何现有测试，190/190 全部通过。
+
+### 19.5 踩坑与修复
+
+#### 坑1：grep -c 无匹配时的输出陷阱
+
+初版实现使用 `grep -c "lexical-binding" "$f" 2>/dev/null || echo 0`。但 `grep -c` 在无匹配时会向 stdout 输出 `0`，然后以 exit code 1 退出，触发 `|| echo 0`，导致命令替换结果为 `"0
+0"`（两个 0）。后续 `[[ "$lb" -eq 0 ]]` 解析时报错：
+
+```
+doctor.sh: 行 130: [[: 0
+0: 表达式中有语法错误（错误记号是 "0"）
+```
+
+**修复**：将 `|| echo 0` 改为 `|| true`。`grep -c` 无匹配时 stdout 已输出 `0`，`|| true` 仅确保 exit code 为 0，不产生额外输出。
+
+#### 坑2：手动破坏文件后的恢复
+
+验证违规检测时临时破坏了 `aiaos-cli-theme.el`，恢复时使用了 `cp /tmp/theme.bak`，但该备份文件已被破坏覆盖。最终通过 `git checkout -- elisp/aiaos-cli-theme.el` 从版本控制恢复。
+
+**教训**：验证破坏性测试时，应优先使用 `git checkout` 恢复，而非依赖临时备份文件。
+
+### 19.6 反思
+
+**做得好的地方**：
+- 选题精准：从 design.md §18.6 的明确待办入手，有据可依，非臆造需求
+- 实现简洁：纯新增函数 + 一行调用，不修改任何现有逻辑，风险极低
+- 验证完整：正常运行 + 违规检测（lexical-binding 和 provide 两种）+ 全量回归三重验证
+- 踩坑记录：将 grep -c 陷阱和文件恢复教训如实记录，为后续轮次提供参考
+
+**可改进的地方**：
+- check_code_health 目前只检查 lexical-binding 和 provide 两项，可扩展检查 `defcustom` 的 defgroup、版本号格式、Package-Requires 等
+- 违规检测只输出 warning（⚠），可增加 `doctor check --strict` 将违规升级为 failed
+- 可考虑增加 `doctor fix` 自动修复能力（自动补 lexical-binding 声明），但需谨慎评估自动修改源码的风险
+
+---
+
+**文档版本**: 2.3  
+**更新时间**: 2026-10-28  
+**维护者**: AIAOS Project  
+**变更**: 添加第 19 章 R3000 代码健康度扫描集成到 Doctor
