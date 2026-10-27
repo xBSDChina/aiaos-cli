@@ -191,7 +191,7 @@ log_export() {
     if [[ "$format" == "json" ]]; then
         python3 -c "
 import json, sys
-with open('$log_file') as f:
+with open(sys.argv[1]) as f:
     lines = f.readlines()
 
 output = []
@@ -205,14 +205,14 @@ for line in lines:
     except json.JSONDecodeError:
         output.append({'raw': line})
 
-with open('$output_file', 'w') as f:
+with open(sys.argv[2], 'w') as f:
     json.dump(output, f, indent=2)
-"
+" "$log_file" "$output_file"
     elif [[ "$format" == "jsonl" ]]; then
         # JSONL: 逐行输出，保留原始 JSON 结构
         python3 -c "
-import json
-with open('$log_file') as f, open('$output_file', 'w') as out:
+import json, sys
+with open(sys.argv[1]) as f, open(sys.argv[2], 'w') as out:
     for line in f:
         line = line.rstrip()
         if not line:
@@ -240,7 +240,7 @@ log_analyze() {
 import json, sys
 from collections import Counter
 
-with open('$log_file') as f:
+with open(sys.argv[1]) as f:
     lines = f.readlines()
 
 total = len(lines)
@@ -268,7 +268,7 @@ for line in lines:
         hour_key = ts[:13]
         hours[hour_key] += 1
 
-if '$format' == 'json':
+if sys.argv[2] == 'json':
     print(json.dumps({
         'total_lines': total,
         'levels': dict(levels),
@@ -291,7 +291,7 @@ else:
     print(f'按小时分布 (最近24小时):')
     for hour, count in sorted(hours.items())[-24:]:
         print(f'  {hour}: {count}')
-"
+" "$log_file" "$format"
 }
 
 log_list() {

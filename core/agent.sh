@@ -54,17 +54,17 @@ agent_chat() {
     
     if [[ "$format" == "json" ]]; then
         python3 -c "
-import json, time
+import json, time, sys
 response = {
     'type': 'result',
-    'session_id': '$session_id',
-    'agent': '$agent_name',
-    'message': '$message',
+    'session_id': sys.argv[1],
+    'agent': sys.argv[2],
+    'message': sys.argv[3],
     'reply': '这是模拟回复。实际应连接到 AIAOS Agent 后端。',
     'timestamp': time.time()
 }
 print(json.dumps(response))
-"
+" "$session_id" "$agent_name" "$message"
     else
         echo -n "🤖 [$agent_name] "
         local reply="这是模拟回复。实际应连接到 AIAOS Agent 后端。"
@@ -248,16 +248,18 @@ agent_status() {
     local agents=("default" "coder" "reviewer" "architect")
     local current_agent="default"
     
+    local current_session
+    current_session=$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "none")
     if [[ "$format" == "json" ]]; then
         python3 -c "
-import json
+import json, sys
 print(json.dumps({
-    'status': '$status',
-    'current_agent': '$current_agent',
+    'status': sys.argv[1],
+    'current_agent': sys.argv[2],
     'available_agents': ['default', 'coder', 'reviewer', 'architect'],
-    'session': '$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "none")'
+    'session': sys.argv[3]
 }))
-"
+" "$status" "$current_agent" "$current_session"
     else
         echo "Agent 状态: $status"
         echo "当前 Agent: $current_agent"
