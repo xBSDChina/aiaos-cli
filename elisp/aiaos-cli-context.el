@@ -213,7 +213,7 @@ CONTEXT 是上下文（可选，默认当前上下文）
   (let* ((ctx (or context (aiaos-cli--context-current))))
     (while ctx
       (if (gethash key (aiaos-cli--context-values ctx) nil)
-          (return t))
+          (cl-return t))
       (setf ctx (aiaos-cli--context-parent ctx)))
     nil))
 

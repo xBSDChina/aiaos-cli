@@ -21,6 +21,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(declare-function cl-last (cl))
 (require 'aiaos-cli-state)
 
 (defgroup aiaos-cli-lifecycle nil
@@ -136,7 +137,7 @@ BODY 是要执行的副作用
     ;; 清理函数
     (lambda ()
       (message \"Cleanup effect\"))))"
-  (declare (indent 1))
+
   `(aiaos-cli--lifecycle--register-effect
      ,deps
      (lambda () ,@body)
@@ -261,7 +262,7 @@ BODY 是组件体
       (message \"Effect\"))
     (aiaos-cli--use-on-drop
       (message \"Cleanup\")))"
-  (declare (indent 1))
+
   `(cl-defun ,name ()
      "组件函数"
      (let ((component-id (cl-incf aiaos-cli--component-id-counter)))

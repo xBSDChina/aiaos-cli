@@ -26,6 +26,9 @@
 ;; 仅使用 aiaos-cli-doctor / aiaos-cli-log-tail 两个函数
 (declare-function aiaos-cli-doctor (aiaos-cli))
 (declare-function aiaos-cli-log-tail (aiaos-cli))
+(declare-function aiaos-cli--assert-binary (aiaos-cli))
+(declare-function aiaos-cli--version-consistent-p (aiaos-cli))
+(declare-function mouse-event-button-press-event-p (mouse))
 
 (require 'aiaos-cli-state)
 (require 'aiaos-cli-context)
@@ -34,6 +37,9 @@
 (require 'aiaos-cli-theme)
 (require 'aiaos-cli-router)
 (require 'aiaos-cli-components)
+
+(defvar aiaos-cli--expected-version "1.0.0")
+(defvar aiaos-cli--skill-cache nil)
 
 (defgroup aiaos-cli-app nil
   "aiaos-cli 应用"

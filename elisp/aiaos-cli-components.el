@@ -450,7 +450,7 @@ WINDOW-SIZE 是可视窗口大小（可选，默认20）
         (scroll-state (aiaos-cli--state-create 0)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
-          (lambda (buffer)
+          (lambda (_)
             (let* ((total (length items))
                    (ws (or window-size 20))
                    (start (max 0 (aiaos-cli--state-get scroll-state)))
@@ -471,7 +471,7 @@ WINDOW-SIZE 是可视窗口大小（可选，默认20）
               ;; 渲染滚动提示
               (when (> total ws)
                 (insert "\n" (make-string 40 ?\u2500) "\n")
-                (insert (format "[↑↓ scroll | ↑↓ selected | q quit]" start end))
+                (insert "[↑↓ scroll | ↑↓ selected | q quit]")
               ))))
     ;; 添加状态到组件
     (setf (aiaos-cli--component-state component) (list selected-state scroll-state))

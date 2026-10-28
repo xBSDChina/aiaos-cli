@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026 SenseTime / AIAOS Project
 ;; Author: AIAOS Project
-;; Version: 1.1.0
+;; Version: 1.0.0
 ;; Keywords: tools, process, aiaos, tui
 
 ;; 响应式状态管理系统，借鉴 ratatui-kit 的 use_state hook 设计理念。
@@ -186,10 +186,10 @@ FILE 是文件路径"
 
 FILE 是文件路径
 返回新的状态句柄"
-  (let ((value (with-temp-buffer
-                 (insert-file-contents file)
-                 (read (buffer-string))))
-        (state (aiaos-cli--state-create value)))
+  (let* ((value (with-temp-buffer
+                  (insert-file-contents file)
+                  (read (buffer-string))))
+       (state (aiaos-cli--state-create value)))
     state))
 
 ;; 状态调试

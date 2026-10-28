@@ -27,9 +27,11 @@
     body))
 
 (require 'cl-lib)
+(declare-function copy-list (cl))
 (require 'aiaos-cli-component)
 (require 'aiaos-cli-context)
 
+(declare-function mouse-event-button-press-event-p (mouse))
 (defgroup aiaos-cli-router nil
   "aiaos-cli 路由系统"
   :group 'aiaos-cli

@@ -30,7 +30,7 @@
   :prefix "aiaos-cli-theme-")
 
 (defcustom aiaos-cli-theme-default 'dark
-  "默认主题（'dark 或 'light）"
+  "默认主题 (dark 或 light)"
   :type '(choice (const dark) (const light))
   :group 'aiaos-cli-theme)
 

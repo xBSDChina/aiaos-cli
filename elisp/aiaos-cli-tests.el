@@ -43,7 +43,7 @@
 (ert-deftest aiaos-cli-test/parse-json-non-string-errors ()
   "R780: parse-json should raise user-error on non-string input."
   (let ((caught nil))
-    (condition-case e
+    (condition-case nil
         (aiaos-cli--parse-json nil)
       (error (setq caught t)))
     (should caught)))
