@@ -207,6 +207,16 @@ skill_install() {
             exit 1
         fi
 
+        # R4107: 统一技能目录名为 skill.yaml 的 name 字段，避免 list/info/run
+        # 用 name 匹配而 uninstall/update 用目录名匹配导致的名称不一致
+        local yaml_name
+        yaml_name=$(python3 -c "import yaml,sys; print((yaml.safe_load(open(sys.argv[1])) or {}).get('name',''))" "$skill_dir/skill.yaml" 2>/dev/null || true)
+        if [[ -n "$yaml_name" && "$yaml_name" != "$repo_name" ]]; then
+            mv -f "$skill_dir" "$target_dir/$yaml_name"
+            skill_dir="$target_dir/$yaml_name"
+            repo_name="$yaml_name"
+        fi
+
         log_info "技能安装成功: $repo_name"
         output_result "success" "技能已安装" "name" "$repo_name" "path" "$skill_dir"
 
@@ -225,6 +235,16 @@ skill_install() {
             log_error "无效的技能包: 缺少 skill.yaml"
             rm -rf "$skill_dir"
             exit 1
+        fi
+
+        # R4107: 统一技能目录名为 skill.yaml 的 name 字段，避免 list/info/run
+        # 用 name 匹配而 uninstall/update 用目录名匹配导致的名称不一致
+        local yaml_name
+        yaml_name=$(python3 -c "import yaml,sys; print((yaml.safe_load(open(sys.argv[1])) or {}).get('name',''))" "$skill_dir/skill.yaml" 2>/dev/null || true)
+        if [[ -n "$yaml_name" && "$yaml_name" != "$skill_name" ]]; then
+            mv -f "$skill_dir" "$target_dir/$yaml_name"
+            skill_dir="$target_dir/$yaml_name"
+            skill_name="$yaml_name"
         fi
 
         log_info "技能安装成功: $skill_name"
