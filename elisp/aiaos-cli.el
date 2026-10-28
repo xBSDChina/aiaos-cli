@@ -715,7 +715,13 @@ VERBOSE 为真时逐个 message 提示。已加载过的技能跳过（幂等）
         (cl-loop for skill across skills do
           (let ((name (gethash "name" skill))
                 (disabled (gethash "disabled" skill)))
-            (when (and name (not (eq disabled t)) (not (member name loaded)))
+            (when (and name
+                      (not (eq disabled t))
+                      (not (member name loaded))
+                      ;; R1401: Only load skills that exist in aiaos-cli-skills-dir.
+                      (file-exists-p (expand-file-name
+                                           (format "%s/skill.yaml" name)
+                                           aiaos-cli-skills-dir)))
               (aiaos-cli-skill-load name)
               (puthash name skill aiaos-cli--skill-cache)
               (push name loaded)
