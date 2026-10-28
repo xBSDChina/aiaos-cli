@@ -298,6 +298,45 @@ else
 fi
 
 echo ""
+echo "--- 测试 19: skill install 目录名统一为 skill.yaml name (R4107) ---"
+# 场景: skill.yaml name 与源目录 basename 不同, install 后目录名应服从 name 字段
+SKILL_NAME="test-skill-r4107"
+SRC_DIR="/tmp/r4107-skill-test"
+rm -rf "$SRC_DIR"
+$CLI_BIN skill create --name "$SKILL_NAME" --command demo --output-dir "$SRC_DIR" --force >/dev/null 2>&1 || { echo "FAIL: skill create 失败"; exit 1; }
+# create 后 skill.yaml name=$SKILL_NAME, 源目录 basename=r4107-skill-test (不同)
+$CLI_BIN skill install "$SRC_DIR" --force >/dev/null 2>&1 || { echo "FAIL: skill install 失败"; exit 1; }
+# 核心断言: 安装后目录名 = skill.yaml name (而非 basename)
+if [[ -d "$AIAOS_CLI_CONFIG_DIR/skills/$SKILL_NAME" ]]; then
+    echo "PASS: install 后目录名 = skill.yaml name ($SKILL_NAME)"
+else
+    echo "FAIL: install 后目录名不等于 skill.yaml name"
+    ls -d "$AIAOS_CLI_CONFIG_DIR/skills/"* 2>/dev/null
+    exit 1
+fi
+# list 显示该 name
+LIST_OUT=$($CLI_BIN skill list 2>/dev/null)
+echo "$LIST_OUT" | grep -q "$SKILL_NAME" || { echo "FAIL: skill list 未显示 $SKILL_NAME"; exit 1; }
+echo "PASS: skill list 显示 $SKILL_NAME"
+# validate 用 list 的名字即可通过
+VOUT=$($CLI_BIN skill validate --name "$SKILL_NAME" 2>&1)
+echo "$VOUT" | grep -q "验证通过" || { echo "FAIL: validate --name $SKILL_NAME 未通过: $VOUT"; exit 1; }
+echo "PASS: validate --name $SKILL_NAME 通过"
+# run 用 list 的名字
+ROUT=$($CLI_BIN skill run --name "$SKILL_NAME" --command demo 2>&1)
+echo "$ROUT" | grep -q '"status":"ok"' || { echo "FAIL: run --name $SKILL_NAME 失败: $ROUT"; exit 1; }
+echo "PASS: run --name $SKILL_NAME 成功"
+# uninstall 用 list 的名字即可卸载 (修复前此处会失败)
+UOUT=$($CLI_BIN skill uninstall --name "$SKILL_NAME" --force 2>&1)
+echo "$UOUT" | grep -q "已卸载" || { echo "FAIL: uninstall --name $SKILL_NAME 失败: $UOUT"; exit 1; }
+echo "PASS: uninstall --name $SKILL_NAME 成功"
+# list 确认移除
+LIST_AFTER=$($CLI_BIN skill list 2>/dev/null)
+echo "$LIST_AFTER" | grep -q "$SKILL_NAME" && { echo "FAIL: uninstall 后 list 仍显示 $SKILL_NAME"; exit 1; }
+echo "PASS: uninstall 后 list 已移除 $SKILL_NAME"
+rm -rf "$SRC_DIR"
+
+echo ""
 echo "=== 清理测试环境 ==="
 rm -rf "$AIAOS_CLI_DATA_DIR" "$AIAOS_CLI_CONFIG_DIR" "/tmp/test-aiaos-project" "/tmp/context-export.yaml" "/tmp/log-export.json"
 
