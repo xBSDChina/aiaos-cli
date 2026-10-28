@@ -21,7 +21,12 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'aiaos-cli)
+
+;; 循环依赖：aiaos-cli.el 已 require 本模块，故用 declare-function 声明
+;; 仅使用 aiaos-cli-doctor / aiaos-cli-log-tail 两个函数
+(declare-function aiaos-cli-doctor (aiaos-cli))
+(declare-function aiaos-cli-log-tail (aiaos-cli))
+
 (require 'aiaos-cli-state)
 (require 'aiaos-cli-context)
 (require 'aiaos-cli-component)
