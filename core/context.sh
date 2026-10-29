@@ -404,7 +404,17 @@ context_import() {
     context_id="${context_id:-$(generate_context_id)}"
     local context_file="$CONTEXT_DIR/$context_id.yaml"
 
-    cp "$input_file" "$context_file"
+    # 复制文件并更新内部 id 字段
+    python3 -c "
+import yaml, sys
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f)
+data['id'] = sys.argv[2]
+data['name'] = data.get('name', 'imported-context')
+with open(sys.argv[3], 'w') as f:
+    yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+" "$input_file" "$context_id" "$context_file"
+
     log_info "上下文已导入: $context_id"
 }
 

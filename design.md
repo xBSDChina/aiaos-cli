@@ -3120,3 +3120,110 @@ bash scripts/sync-to-runtime.sh --dry-run
 **更新时间**: 2026-10-28
 **维护者**: AIAOS Project
 **变更**: R4106 Elisp 编译警告系统化修复（declare-function + cl-lib + let* + docstring 规范）
+
+---
+
+## 23. R4200 数据一致性修复：context import 内部 ID 字段未同步（2026-10-29）
+
+### 23.1 问题描述
+
+**Bug ID**: R4200
+**发现方式**: 运行时观察 `aiaos-cli context list` 输出
+**严重程度**: 中（数据一致性缺陷，不影响核心功能）
+
+**现象**:
+- `context list` 输出中出现重复条目（同一 `id` 出现两次）
+- 文件系统中有 `ctx-1792306555-cb06b47a.yaml`，但列表输出中对应的是 `ctx-1792306538-cf69d651`
+
+**根因**:
+- `context_import` 函数使用 `cp "$input_file" "$context_file"` 复制文件
+- 复制后未更新 YAML 内部的 `id` 字段
+- `context_list` 遍历 `$CONTEXT_DIR/*.yaml` 并读取内部 `id` 字段
+- 当文件名与内部 `id` 不一致时，列表输出重复条目
+
+### 23.2 修复方案
+
+**修复策略**: 在 `context_import` 中复制文件后，通过 Python 脚本更新 YAML 内部字段
+
+**代码变更**:
+```bash
+# 修复前
+cp "$input_file" "$context_file"
+
+# 修复后
+python3 -c "
+import yaml, sys
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f)
+data['id'] = sys.argv[2]
+data['name'] = data.get('name', 'imported-context')
+with open(sys.argv[3], 'w') as f:
+    yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+" "$input_file" "$context_id" "$context_file"
+```
+
+### 23.3 范式提炼
+
+#### 范式 23.3.1: 数据导入/复制必须同步内部 ID
+
+**规则**: 任何涉及"复制文件到新路径"的操作（import/clone/fork），必须同步更新文件内部的 `id` 字段，确保文件名与内部 ID 一致。
+
+**反模式**:
+```bash
+# ❌ 错误：只复制文件，不更新内部 ID
+cp "$source.yaml" "$target.yaml"
+```
+
+**正确模式**:
+```bash
+# ✅ 正确：复制文件并更新内部 ID
+python3 -c "
+import yaml, sys
+data = yaml.safe_load(open(sys.argv[1]))
+data['id'] = sys.argv[2]
+yaml.dump(data, open(sys.argv[3], 'w'), ...)
+" "$source.yaml" "$new_id" "$target.yaml"
+```
+
+#### 范式 23.3.2: 数据一致性验证清单
+
+**验证步骤**:
+1. **文件名与内部 ID 一致性**: `ls $DATA_DIR/*.yaml | while read f; do echo "$(basename $f) $(python3 -c "import yaml; print(yaml.safe_load(open('$f'))['id'])")"; done`
+2. **列表输出无重复**: `aiaos-cli <domain> list | sort | uniq -d` 应为空
+3. **数据完整性**: 所有必填字段（id/name/session）均已填充
+
+#### 范式 23.3.3: 回归测试覆盖
+
+**测试点**:
+- `context import` 后执行 `context list`，验证新导入的上下文 ID 正确
+- `context export` 后执行 `context import`，验证内部 ID 同步
+- 重复导入相同 ID，验证覆盖策略
+
+### 23.4 验证记录
+
+**R4200 验证流程**:
+1. ✅ 基线测试: 289/289 通过
+2. ✅ 问题复现: `context list` 输出重复条目
+3. ✅ 修复应用: 修改 `context_import` 函数
+4. ✅ 功能验证: 手动测试 import → list → show 全链路
+5. ✅ 回归测试: 289/289 通过
+
+**修复文件清单**:
+- `core/context.sh`: 修复 `context_import` 函数，添加内部 ID 同步逻辑
+
+**未修复的残留数据**:
+- `~/.local/share/aiaos/contexts/ctx-1792306555-cb06b47a.yaml` 文件名与内部 ID 不一致（历史数据，不影响功能）
+
+### 23.5 经验总结
+
+1. **数据一致性是隐性需求**: 文件名与内部 ID 的一致性容易被忽视，但会影响列表、删除、更新等操作
+2. **cp/mv 不是万能的**: 对于结构化数据（YAML/JSON），简单的文件复制无法保证内部字段同步
+3. **运行时观察发现 bug**: 通过实际使用 `context list` 发现输出异常，比代码审查更直接
+4. **修复后必须验证**: 手动测试 + 回归测试双保险，确保修复有效且无副作用
+
+---
+
+**文档版本**: 2.8.0
+**更新时间**: 2026-10-29
+**维护者**: AIAOS Project
+**变更**: R4200 context import 数据一致性修复（内部 ID 字段同步）
