@@ -14,6 +14,15 @@ if [[ -n "${AIAOS_PROJECT_ROOT:-}" && -d "$AIAOS_PROJECT_ROOT/.aiaos/skills" ]];
     SKILL_DIRS+=("$AIAOS_PROJECT_ROOT/.aiaos/skills")
 fi
 
+# 判断是否为内置技能目录（规范化路径后匹配，避免 core/../ 未解析路径误判）
+# R4301: 修复 R4300 路径匹配漏洞 — SKILL_DIRS 首元素为未解析的 .../core/../skills，
+# 直接用字符串匹配 *aiaos-cli/skills* 会失败，导致内置技能被误删
+is_builtin_skill_dir() {
+    local dir
+    dir="$(readlink -f "$1" 2>/dev/null || echo "$1")"
+    [[ "$dir" == *aiaos-cli/skills* ]]
+}
+
 show_help() {
     cat <<EOF
 用法: aiaos-cli skill <动作> [选项]
@@ -283,7 +292,7 @@ skill_uninstall() {
         local skill_dir="$dir/$name"
         [[ -d "$skill_dir" ]] || continue
         # R4300: 内置技能（项目 skills/）跳过，继续查找用户技能
-        if [[ "$dir" == *"aiaos-cli/skills" ]]; then
+        if is_builtin_skill_dir "$dir"; then
             continue
         fi
 
@@ -303,7 +312,7 @@ skill_uninstall() {
     if [[ "$found" == false ]]; then
         # 内置技能存在但用户技能不存在
         for dir in "${SKILL_DIRS[@]}"; do
-            if [[ -d "$dir/$name" && "$dir" == *"aiaos-cli/skills" ]]; then
+            if [[ -d "$dir/$name" ]] && is_builtin_skill_dir "$dir"; then
                 log_error "无法卸载内置技能: $name"
                 exit 1
             fi

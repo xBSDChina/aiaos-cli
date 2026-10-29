@@ -3227,3 +3227,65 @@ yaml.dump(data, open(sys.argv[3], 'w'), ...)
 **更新时间**: 2026-10-29
 **维护者**: AIAOS Project
 **变更**: R4200 context import 数据一致性修复（内部 ID 字段同步）
+
+## 24. R4301 修复 R4300 路径匹配漏洞：skill uninstall 内置技能保护（2026-10-29）
+
+### 24.1 问题描述
+
+**Bug ID**: R4301
+**发现方式**: 对 R4300 修复进行运行时验证（`skill uninstall --name hello-world --force`）
+**严重程度**: 高（内置技能被误删，破坏项目资产）
+
+**现象**:
+- 执行 `aiaos-cli skill uninstall --name hello-world --force` 成功卸载了内置技能
+- 预期行为：内置技能（项目 `skills/`）应被保护，不可卸载
+
+**根因**:
+- R4300 在 `skill_uninstall` 中用字符串匹配 `[[ "$dir" == *"aiaos-cli/skills" ]]` 判断内置技能目录
+- 但 `SKILL_DIRS` 首元素是 `$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../skills`
+- 实际值为未解析路径 `.../aiaos-cli/core/../skills`（含 `core/../`）
+- 字符串 `*aiaos-cli/skills*` 无法匹配含 `core/../` 的路径，导致内置技能被误删
+
+### 24.2 修复方案
+
+新增辅助函数 `is_builtin_skill_dir()`，用 `readlink -f` 规范化路径后再匹配：
+
+```bash
+# 判断是否为内置技能目录（规范化路径后匹配，避免 core/../ 未解析路径误判）
+is_builtin_skill_dir() {
+    local dir
+    dir="$(readlink -f "$1" 2>/dev/null || echo "$1")"
+    [[ "$dir" == *aiaos-cli/skills* ]]
+}
+```
+
+替换 `skill_uninstall` 中两处字符串匹配：
+1. 主循环：`if is_builtin_skill_dir "$dir"; then continue; fi`
+2. fallback 循环：`if [[ -d "$dir/$name" ]] && is_builtin_skill_dir "$dir"; then`
+
+### 24.3 验证记录
+
+**R4301 验证流程**:
+1. ✅ 根因确认：`core/../skills` 未解析路径无法匹配 `*aiaos-cli/skills*`
+2. ✅ 修复应用：新增 `is_builtin_skill_dir()` 辅助函数
+3. ✅ 功能验证：`skill uninstall --name hello-world --force` 正确拒绝（"无法卸载内置技能"）
+4. ✅ 用户技能验证：`skill uninstall --name test-user-skill --force` 正常卸载
+5. ✅ 回归测试：新增测试 20（内置技能保护），全量 295/295 通过
+
+**修复文件清单**:
+- `core/skill.sh`: 新增 `is_builtin_skill_dir()` 函数，替换两处字符串匹配
+- `tests/test_cli.sh`: 新增测试 20（R4301 内置技能保护回归测试）
+
+### 24.4 经验总结
+
+1. **路径规范化是防御性编程**: 字符串匹配路径前必须 `readlink -f` 规范化，避免 `..`/`.` 导致的误判
+2. **运行时验证不可省略**: R4300 声称修复但未实际运行验证，导致漏洞潜伏
+3. **set -e 下命令替换需容错**: `$(cmd || true)` 避免非零退出中断测试
+4. **测试追加位置关键**: 回归测试必须放在清理段之前，否则被清理逻辑干扰
+
+---
+
+**文档版本**: 2.9.0
+**更新时间**: 2026-10-29
+**维护者**: AIAOS Project
+**变更**: R4301 skill uninstall 内置技能保护修复（路径规范化）

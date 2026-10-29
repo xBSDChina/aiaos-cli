@@ -337,6 +337,31 @@ echo "PASS: uninstall 后 list 已移除 $SKILL_NAME"
 rm -rf "$SRC_DIR"
 
 echo ""
+echo "--- 测试 20: skill uninstall 内置技能保护 (R4301) ---"
+# 场景: 内置技能(项目 skills/)在 SKILL_DIRS 首元素为未解析路径(.../core/../skills)时，
+# 应正确识别为内置技能并拒绝卸载。修复前字符串匹配 *aiaos-cli/skills* 失败导致误删。
+BUILTIN_TEST="hello-world"
+# 确认内置技能存在
+if [[ ! -d "$(dirname "$(readlink -f "$CLI_BIN")")/../core/../skills/$BUILTIN_TEST" ]]; then
+    echo "SKIP: 内置技能 $BUILTIN_TEST 不存在"
+else
+    UNINSTALL_OUT=$($CLI_BIN skill uninstall --name "$BUILTIN_TEST" --force 2>&1 || true)
+    if echo "$UNINSTALL_OUT" | grep -q "无法卸载内置技能"; then
+        echo "PASS: 内置技能 $BUILTIN_TEST 受保护不可卸载 (R4301)"
+    else
+        echo "FAIL: 内置技能 $BUILTIN_TEST 被误删或未正确保护: $UNINSTALL_OUT"
+        exit 1
+    fi
+    # 确认技能文件仍在
+    if [[ -f "$(dirname "$(readlink -f "$CLI_BIN")")/../core/../skills/$BUILTIN_TEST/skill.yaml" ]]; then
+        echo "PASS: 内置技能 $BUILTIN_TEST 文件未被删除"
+    else
+        echo "FAIL: 内置技能 $BUILTIN_TEST 文件被误删"
+        exit 1
+    fi
+fi
+
+echo ""
 echo "=== 清理测试环境 ==="
 rm -rf "$AIAOS_CLI_DATA_DIR" "$AIAOS_CLI_CONFIG_DIR" "/tmp/test-aiaos-project" "/tmp/context-export.yaml" "/tmp/log-export.json"
 
