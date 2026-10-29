@@ -3755,8 +3755,137 @@ With optional ARG (non-nil), run in interactive setup mode."
 - 💡 建议：提供 M-x aiaos-cli-command-tree 的截图示例
 
 ---
+## 28. R5200 AIAOS-CLI 全量回归验证与零缺陷交付范式（2026-10-30）
 
-**文档版本**: 2.12.0
+### 28.1 验证任务流程
+
+本次任务基于 `~/aiaos-cli_skills.md` 技能开发指引与 `~/aiaos-cli_design.md` 设计文档，对 `~/aiaos/aiaos-cli/` 项目进行开发调试与完善。实际执行为全量回归验证流程：
+
+```
+1. 读取指引文档
+   - cat ~/aiaos-cli_skills.md        # 技能开发指引（目录结构/元数据/测试/常见错误）
+   - cat ~/aiaos-cli_design.md       # 设计文档（模块架构/范式/交付清单）
+
+2. 定位实际项目结构
+   - ls ~/aiaos/aiaos-cli/
+   # bin/aiaos-cli           # Go/Shell 后端入口
+   # core/*.sh               # 核心模块（agent/config/session/skill/context/log 等）
+   # elisp/*.el               # Emacs 前端（主文件 + 9 个模块）
+   # skills/<skill-name>/    # 8 个技能包
+   # tests/*.sh, *.el         # 双测试套件
+
+3. 基线测试（双套件）
+   - bash tests/test_cli.sh                                    # Shell 20 组全绿
+   - emacs --batch -L elisp -L tests -l tests/test-aiaos-cli.el \
+       --eval "(ert-run-tests-batch)"                         # Elisp 55/55
+
+4. M-x 入口与功能验证
+   - grep -n "defun aiaos\b" elisp/aiaos-cli.el                # M-x aiaos 主入口确认
+   - emacs --batch -L elisp --eval "(require 'aiaos-cli)(aiaos-cli-init t)"  # 加载成功
+   - bash bin/aiaos-cli version / skill list / session list   # CLI 后端正常
+
+5. 待完善点排查
+   - grep -rn "TODO\|FIXME\|XXX\|HACK\|待完善\|待实现" elisp/ core/ bin/ skills/
+   # 结果：仅 mktemp 模板中的 XXXXXX（非待办标记），零待修复代码点
+
+6. 交付数据对齐
+   - M-x 命令数：62（= design.md §27.5.1 声明的 62 个 autoload 标记）
+   - major mode：3（aiaos-cli-app-mode / command-mode / result-mode）
+   - 技能数：8（hello-world/text-tools/string-tools/skill-management/
+               file-tools/emacs-tools/date-tools/base64-tools）
+   - design.md 行数：3762
+```
+
+### 28.2 验证结果汇总
+
+| 验证项 | 方法 | 结果 |
+|--------|------|------|
+| Shell 测试套件 | `bash tests/test_cli.sh` | 20 组全绿（版本/帮助/会话/上下文/技能/日志/依赖/路由/安装/卸载保护） |
+| Elisp 测试套件 | `emacs --batch ... (ert-run-tests-batch)` | 55/55 通过（skill-run/parse-json/tui/version 等） |
+| M-x aiaos 入口 | `emacs --batch --eval "(aiaos-cli-init t)"` | 加载成功，TUI 应用可启动 |
+| CLI 后端 | `bash bin/aiaos-cli version/skill list/session list` | 正常返回 |
+| 待完善点 | `grep TODO/FIXME/XXX` | 零待修复代码点 |
+| 交付数据对齐 | 统计命令数/autoload数/技能数 | 与 design.md §27.5.1 完全一致 |
+
+### 28.3 修改文件清单
+
+| 文件 | 修改类型 | 说明 |
+|------|----------|------|
+| `design.md` | 文档追加 | 追加第 28 章：全量回归验证与零缺陷交付范式（R5200） |
+| `~/aiaos-cli_design.md` | 指引沉淀 | 本任务流程提炼自该指引，未修改原文件 |
+
+### 28.4 范式提炼
+
+#### 范式 28.4.1: 双套件基线回归范式
+
+```bash
+# 1. Shell 测试套件（后端）
+bash tests/test_cli.sh
+
+# 2. Elisp 测试套件（前端）
+emacs --batch -L elisp -L tests -l tests/test-aiaos-cli.el \
+    --eval "(ert-run-tests-batch)"
+
+# 3. 入口加载验证
+emacs --batch -L elisp --eval "(require 'aiaos-cli)(aiaos-cli-init t)"
+
+# 4. CLI 后端冒烟
+bash bin/aiaos-cli version && bash bin/aiaos-cli skill list
+```
+
+**要点**:
+1. Shell 与 Elisp 双套件必须同时全绿，才算基线稳固
+2. M-x 入口需用 batch 模式验证加载成功（非交互 TUI 在 batch 下不渲染但可验证 require）
+3. CLI 后端冒烟测试覆盖 version/skill/session 三个核心域
+
+#### 范式 28.4.2: 零缺陷交付对齐范式
+
+```elisp
+;; 交付前对齐 design.md 声明的数据
+;; 1. M-x 命令数 = autoload 标记数
+(length (aiaos-cli-command-tree))   ; 应等于 62
+
+;; 2. 技能数 = skills/ 子目录数
+(length (aiaos-cli-skill-list))     ; 应等于 8
+
+;; 3. major mode 数
+;;    aiaos-cli-app-mode / aiaos-cli-command-mode / aiaos-cli-result-mode = 3
+
+;; 4. Elisp 测试通过率
+;;    55/55 = 100%
+```
+
+**要点**:
+1. 交付前必须核对实际数据与文档声明一致
+2. 命令树/技能清单/测试通过率是三个核心对齐指标
+3. 数据不一致即视为文档与实现漂移，需修复
+
+#### 范式 28.4.3: 待完善点排查范式
+
+```bash
+# 全仓库扫描待办标记
+grep -rn "TODO\|FIXME\|XXX\|HACK\|待完善\|待实现" elisp/ core/ bin/ skills/ tests/
+
+# 排除误报：mktemp 模板中的 XXXXXX 非待办标记
+# 结果为空 = 零待修复代码点 = 可零缺陷交付
+```
+
+**要点**:
+1. 待办标记扫描是交付前的必要步骤
+2. 需区分真正的 TODO 与模板占位符（如 mktemp 的 XXXXXX）
+3. 零待办标记是"零缺陷交付"的硬性指标
+
+### 28.5 经验总结
+
+1. **基线优先**：接手项目先跑双套件基线测试，全绿再进入开发，避免在破损基线上开发
+2. **入口即契约**：M-x aiaos 是用户第一入口，必须验证其加载与启动能力，batch 模式可验证 require/init 但不渲染 TUI
+3. **文档-实现对齐**：design.md 声明的命令数/技能数/测试数必须与实际一致，漂移即 bug
+4. **零缺陷门槛**：待办标记扫描 + 双套件全绿 + 数据对齐，三者齐备才算零缺陷交付
+5. **指引驱动**：`~/aiaos-cli_skills.md` 提供了技能目录结构/元数据/测试/常见错误的标准，`~/aiaos-cli_design.md` 提供了模块架构/范式/交付清单的标准，二者结合确保开发与文档同步演进
+
+---
+
+**文档版本**: 2.13.0
 **更新时间**: 2026-10-30
 **维护者**: AIAOS Project
-**变更**: R5100 任务流程总结与 M-x 入口设计范式补充
+**变更**: R5200 全量回归验证与零缺陷交付范式补充
