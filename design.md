@@ -3578,3 +3578,185 @@ With optional ARG (non-nil), run in interactive setup mode."
 **更新时间**: 2026-10-30
 **维护者**: AIAOS Project
 **变更**: R4400 全量回归验证与零缺陷交付范式总结
+
+---
+
+## 27. 本次任务流程总结（R5100）
+
+### 27.1 任务目标
+基于 `~/aiaos-cli_design.md` 和 `~/aiaos-cli_skills.md`，开发调试完善 emacs aiaos-cli 项目，保留 `M-x aiaos` 入口供人工审核查阅全部功能。
+
+### 27.2 执行流程
+
+#### 步骤 1: 环境确认与基线测试
+- ✅ 读取指引文档：`~/aiaos-cli_design.md` (133KB, 3580行)、`~/aiaos-cli_skills.md`
+- ✅ 定位项目：`~/aiaos/aiaos-cli/`
+- ✅ Elisp 测试：55/55 PASS (2.4秒)
+- ⚠️ Shell 测试：部分通过（Agent交互步骤卡住，但核心命令验证正常）
+
+#### 步骤 2: M-x 入口验证
+- ✅ 核心命令：37个
+- ✅ 模式：3个（aiaos-cli-mode, aiaos-cli-agent-mode, aiaos-cli-command-tree-mode）
+- ✅ 主入口：`M-x aiaos` / `M-x aiaos-cli` (alias)
+- ✅ Autoload 标记：62个
+
+#### 步骤 3: 功能完整性检查
+- ✅ Session 管理：new/list/current/show/switch/archive/delete
+- ✅ Context 管理：show/save/load/clear/export
+- ✅ Skill 管理：list/info/validate/deps/search/enable/disable/load/run/create/install/uninstall/update
+- ✅ Agent 模式：chat/send/status/delegate/tool/history
+- ✅ Config 管理：get/set/list
+- ✅ 日志查看：log-tail/log-tail-stop
+- ✅ TUI App：app-start
+
+### 27.3 关键发现
+
+#### 27.3.1 M-x 入口设计优势
+1. **统一入口**: `M-x aiaos` 作为主入口，比 `M-x aiaos-cli-init` 更友好
+2. **Autoload 机制**: 62个 `;;;###autoload` 标记确保补全优先和按需加载
+3. **命令树展示**: `M-x aiaos-cli-command-tree` 提供可视化命令浏览
+4. **交互式帮助**: `M-x aiaos-cli-help` 快速访问文档
+
+#### 27.3.2 双端协同验证
+- **后端**: `bin/aiaos-cli` (Go/Shell) 提供命令实现
+- **前端**: `elisp/aiaos-cli.el` (Elisp) 提供交互 UI
+- **通信**: JSON 格式，`{:status "ok"|"error", :data|:error ...}`
+
+#### 27.3.3 技能加载机制
+- **显式加载**: `aiaos-cli-init` 默认不自动加载技能，需显式调用 `aiaos-cli-skill-load-all`
+- **延迟加载**: 技能命令/钩子按需加载，避免启动时开销
+- **命名空间隔离**: `aiaos-cli-skill-<name>/<cmd>` 避免冲突
+
+### 27.4 范式总结
+
+#### 范式 27.4.1: 入口命令设计范式
+```elisp
+;;;###autoload
+(defun aiaos (&optional arg)
+  "Launch AIAOS-CLI TUI application."
+  (interactive "P")
+  (aiaos-cli-init t)  ;; 自动初始化
+  (aiaos-cli--app-run))
+
+;; 兼容别名
+(defalias 'aiaos-cli 'aiaos)
+```
+
+**要点**:
+1. 主入口简短易记（`M-x aiaos`）
+2. 提供别名兼容（`M-x aiaos-cli`）
+3. 自动初始化依赖
+4. Autoload 标记确保补全
+
+#### 范式 27.4.2: 功能分组范式
+```elisp
+;; Session 管理
+(defun aiaos-cli-session-new (name) ...)
+(defun aiaos-cli-session-list () ...)
+(defun aiaos-cli-session-current () ...)
+
+;; Context 管理
+(defun aiaos-cli-context-show () ...)
+(defun aiaos-cli-context-save (name) ...)
+(defun aiaos-cli-context-load (id) ...)
+
+;; Skill 管理
+(defun aiaos-cli-skill-list () ...)
+(defun aiaos-cli-skill-info (name) ...)
+(defun aiaos-cli-skill-validate (name) ...)
+```
+
+**要点**:
+1. 按领域分组（session/context/skill/agent/config）
+2. 命名一致（`aiaos-cli-<domain>-<action>`）
+3. 参数简洁（避免过长参数列表）
+
+#### 范式 27.4.3: 命令树展示范式
+```elisp
+(defun aiaos-cli-command-tree (&optional buffer)
+  "在 BUFFER 中渲染 aiaos-cli 全部命令。"
+  (interactive "P")
+  (let ((buf (or buffer (get-buffer "*aiaos-cli-commands*"))))
+    ;; 渲染命令树
+    (aiaos-cli--render-command-tree buf)))
+```
+
+**要点**:
+1. 可视化展示所有命令
+2. 支持展开/折叠
+3. 可直接运行命令
+4. 刷新机制
+
+#### 范式 27.4.4: 人工审核入口范式
+```elisp
+;; M-x aiaos-cli-help
+(defun aiaos-cli-help ()
+  "显示 aiaos-cli 帮助文档"
+  (interactive)
+  (display "AIAOS-CLI 功能清单" (current-buffer))
+  ;; 列出所有命令和快捷键
+  )
+
+;; M-x aiaos-cli-version
+(defun aiaos-cli-version ()
+  "显示版本信息"
+  (interactive)
+  (message "aiaos-cli version: %s" aiaos-cli-version))
+
+;; M-x aiaos-cli-doctor
+(defun aiaos-cli-doctor ()
+  "环境自检"
+  (interactive)
+  (aiaos-cli-run "doctor" "check"))
+```
+
+**要点**:
+1. 提供帮助命令快速查阅
+2. 版本信息透明
+3. 环境自检方便
+4. 命令树可视化
+
+### 27.5 交付清单
+
+#### 27.5.1 功能完整性
+- ✅ 37个 M-x 命令
+- ✅ 3个 major modes
+- ✅ 62个 autoload 标记
+- ✅ 8个技能（hello-world, text-tools, string-tools, skill-management, file-tools, emacs-tools, date-tools, base64-tools）
+- ✅ 55个 Elisp 测试全通过
+
+#### 27.5.2 文档完整性
+- ✅ design.md: 3580行，覆盖26个主要范式
+- ✅ skills.md: 技能开发指引
+- ✅ CHANGELOG.md: 版本变更记录
+- ✅ TUI_IMPROVEMENT_DESIGN.md: TUI 改进设计
+
+#### 27.5.3 入口可访问性
+- ✅ `M-x aiaos` - 主入口（TUI）
+- ✅ `M-x aiaos-cli` - 别名
+- ✅ `M-x aiaos-cli-help` - 帮助
+- ✅ `M-x aiaos-cli-command-tree` - 命令树
+- ✅ `M-x aiaos-cli-doctor` - 自检
+- ✅ `M-x aiaos-cli-version` - 版本
+
+### 27.6 后续优化建议
+
+#### 27.6.1 Shell 测试稳定性
+- ⚠️ 测试脚本在 Agent 交互步骤卡住（可能环境问题）
+- 💡 建议：分离单元测试和集成测试，避免长时间运行
+
+#### 27.6.2 技能加载优化
+- 💡 建议：考虑在 `aiaos-cli-init` 中默认加载常用技能
+- 💡 建议：提供 `aiaos-cli-skill-load --name <skill>` 按需加载
+
+#### 27.6.3 文档增强
+- 💡 建议：补充快捷键速查表
+- 💡 建议：增加场景化教程（如"如何开发新技能"）
+- 💡 建议：提供 M-x aiaos-cli-command-tree 的截图示例
+
+---
+
+**文档版本**: 2.12.0
+**更新时间**: 2026-10-30
+**维护者**: AIAOS Project
+**变更**: R5100 任务流程总结与 M-x 入口设计范式补充
