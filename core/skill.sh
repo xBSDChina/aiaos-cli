@@ -92,6 +92,7 @@ skill_list() {
 import json, os, sys, yaml
 paths = sys.argv[1:]
 rows = []
+_seen_names = set()
 for path in paths:
     try:
         with open(path) as f:
@@ -100,6 +101,12 @@ for path in paths:
         continue
     d["_path"] = os.path.dirname(path)
     d["_source"] = os.path.basename(os.path.dirname(os.path.dirname(path)))
+    # R4300: 去重同名技能，优先保留内置技能（项目 skills/）
+    _name = d.get("name", "") or ""
+    if _name and _name in _seen_names:
+        continue
+    if _name:
+        _seen_names.add(_name)
     rows.append(d)
 
 fmt = os.environ.get("AIAOS_FMT", "table")
@@ -274,27 +281,36 @@ skill_uninstall() {
     local found=false
     for dir in "${SKILL_DIRS[@]}"; do
         local skill_dir="$dir/$name"
-        if [[ -d "$skill_dir" ]]; then
-            if [[ "$dir" == *"aiaos-cli/skills" ]]; then
+        [[ -d "$skill_dir" ]] || continue
+        # R4300: 内置技能（项目 skills/）跳过，继续查找用户技能
+        if [[ "$dir" == *"aiaos-cli/skills" ]]; then
+            continue
+        fi
+
+        if [[ "$force" != true ]]; then
+            read -p "确定卸载技能 $name? (y/N) " -n 1 -r
+            echo
+            [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "取消卸载"; exit 0; }
+        fi
+
+        rm -rf "$skill_dir"
+        log_info "技能已卸载: $name"
+        output_result "success" "技能已卸载" "name" "$name"
+        found=true
+        break
+    done
+
+    if [[ "$found" == false ]]; then
+        # 内置技能存在但用户技能不存在
+        for dir in "${SKILL_DIRS[@]}"; do
+            if [[ -d "$dir/$name" && "$dir" == *"aiaos-cli/skills" ]]; then
                 log_error "无法卸载内置技能: $name"
                 exit 1
             fi
-
-            if [[ "$force" != true ]]; then
-                read -p "确定卸载技能 $name? (y/N) " -n 1 -r
-                echo
-                [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "取消卸载"; exit 0; }
-            fi
-
-            rm -rf "$skill_dir"
-            log_info "技能已卸载: $name"
-            output_result "success" "技能已卸载" "name" "$name"
-            found=true
-            break
-        fi
-    done
-
-    if [[ "$found" == false ]]; then log_error "技能不存在: $name"; exit 1; fi
+        done
+        log_error "技能不存在: $name"
+        exit 1
+    fi
 }
 
 skill_update() {
