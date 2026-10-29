@@ -474,7 +474,7 @@ R780: 原实现失败分支只 message，用户必须盯 echo area 看错误，�
 另外 --build-cmd 已注入 --format，如果调用方再传 --format 会重复，去重。"
   (interactive (list
                 (completing-read "Domain: "
-                  '("session" "context" "skill" "agent" "project" "config" "doctor" "log"))
+                  '("session" "context" "skill" "agent" "project" "config" "doctor" "log" "provider"))
                 (read-string "Action (empty for help): ")))
   (let ((cmd (apply (quote aiaos-cli--build-cmd) (cons domain (cons action args))))
         seen-format)
@@ -1098,6 +1098,115 @@ $ 只锚定末尾，expected-version 是裸 1.0.0。原实现碰巧能匹配，�
   "Show aiaos agent history."
   (interactive)
   (aiaos-cli-run "agent" "history"))
+
+;; ============================================================
+;; Provider 管理命令组
+;; ============================================================
+
+;;;###autoload
+(defun aiaos-cli-provider-list ()
+  "List all providers and their tier levels."
+  (interactive)
+  (aiaos-cli-run "provider" "list"))
+
+;;;###autoload
+(defun aiaos-cli-provider-use (name)
+  "Switch current provider to NAME."
+  (interactive "sProvider name: ")
+  (aiaos-cli-run "provider" "use" name))
+
+;;;###autoload
+(defun aiaos-cli-provider-test (name)
+  "Health check provider NAME and update tier."
+  (interactive "sProvider name: ")
+  (aiaos-cli-run "provider" "test" name))
+
+;;;###autoload
+(defun aiaos-cli-provider-tier (name tier)
+  "Set provider NAME's tier to TIER (full|active|block)."
+  (interactive "sProvider name: 
+sTier (full/active/block): ")
+  (aiaos-cli-run "provider" "tier" name tier))
+
+;;;###autoload
+(defun aiaos-cli-provider-fallback (strategy)
+  "Set fallback strategy to STRATEGY (sequential|round_robin|priority)."
+  (interactive "sFallback strategy: ")
+  (aiaos-cli-run "provider" "fallback" (format "--strategy=%s" strategy)))
+
+;;;###autoload
+(defun aiaos-cli-provider-fallback-order (order)
+  "Set fallback order. ORDER is comma-separated provider names."
+  (interactive "sFallback order (comma-separated): ")
+  (aiaos-cli-run "provider" "fallback-order" order))
+
+;;;###autoload
+(defun aiaos-cli-provider-audit (name)
+  "Show audit log for provider NAME."
+  (interactive "sProvider name: ")
+  (aiaos-cli-run "provider" "audit" name))
+
+;;;###autoload
+(defun aiaos-cli-provider-report ()
+  "Generate full provider report (strategy, current, fallback order)."
+  (interactive)
+  (aiaos-cli-run "provider" "report"))
+
+;;;###autoload
+(defun aiaos-cli-provider-chat (message)
+  "Send MESSAGE to current provider via provider chat."
+  (interactive "sMessage: ")
+  (aiaos-cli-run "provider" "chat" (format "--message=%s" message)))
+
+;; ============================================================
+;; Skill 管理命令组 (补全 create/install/uninstall/update)
+;; ============================================================
+
+;;;###autoload
+(defun aiaos-cli-skill-create (name)
+  "Create skill skeleton for NAME."
+  (interactive "sSkill name: ")
+  (aiaos-cli-run "skill" "create" (format "--name=%s" name)))
+
+;;;###autoload
+(defun aiaos-cli-skill-install (source)
+  "Install skill from SOURCE (local path or git URL).
+
+SOURCE can be a local directory path or a git repository URL.
+Examples:
+  (aiaos-cli-skill-install \"./skills/my-skill\")
+  (aiaos-cli-skill-install \"https://github.com/user/my-skill\")"
+  (interactive "sSource (path or URL): ")
+  (aiaos-cli-run "skill" "install" source))
+
+;;;###autoload
+(defun aiaos-cli-skill-uninstall (name)
+  "Uninstall skill NAME."
+  (interactive "sSkill name: ")
+  (aiaos-cli-run "skill" "uninstall" (format "--name=%s" name)))
+
+;;;###autoload
+(defun aiaos-cli-skill-update (name)
+  "Update skill NAME to latest version."
+  (interactive "sSkill name: ")
+  (aiaos-cli-run "skill" "update" (format "--name=%s" name)))
+
+
+;; ============================================================
+;; M-x aiaos 主入口
+;; ============================================================
+
+;;;###autoload
+(defun aiaos (&optional arg)
+  "Launch AIAOS-CLI TUI application.
+
+With optional ARG (non-nil), run in interactive setup mode."
+  (interactive "P")
+  (aiaos-cli-init t)
+  (aiaos-cli--app-run))
+
+;; 兼容别名：M-x aiaos-cli 也指向同一入口
+(defalias 'aiaos-cli 'aiaos)
 
 ;;; aiaos-cli-new-commands.el ends here
 

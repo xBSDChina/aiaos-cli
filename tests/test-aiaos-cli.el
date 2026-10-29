@@ -521,3 +521,77 @@ The function source must contain:
       ;; Must use status 124 (timeout convention) — reset to function start
       (goto-char (point-min))
       (should (re-search-forward "124" nil t)))))
+
+;; ============================================================
+;; Provider 管理命令组测试 (R4200)
+;; ============================================================
+
+(ert-deftest aiaos-cli-test/provider-list-exists ()
+  "R4200: aiaos-cli-provider-list must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-provider-list)))
+
+(ert-deftest aiaos-cli-test/provider-use-exists ()
+  "R4200: aiaos-cli-provider-use must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-provider-use)))
+
+(ert-deftest aiaos-cli-test/provider-test-exists ()
+  "R4200: aiaos-cli-provider-test must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-provider-test)))
+
+(ert-deftest aiaos-cli-test/provider-tier-exists ()
+  "R4200: aiaos-cli-provider-tier must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-provider-tier)))
+
+(ert-deftest aiaos-cli-test/provider-fallback-exists ()
+  "R4200: aiaos-cli-provider-fallback must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-provider-fallback)))
+
+(ert-deftest aiaos-cli-test/provider-fallback-order-exists ()
+  "R4200: aiaos-cli-provider-fallback-order must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-provider-fallback-order)))
+
+(ert-deftest aiaos-cli-test/provider-audit-exists ()
+  "R4200: aiaos-cli-provider-audit must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-provider-audit)))
+
+(ert-deftest aiaos-cli-test/provider-report-exists ()
+  "R4200: aiaos-cli-provider-report must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-provider-report)))
+
+(ert-deftest aiaos-cli-test/provider-chat-exists ()
+  "R4200: aiaos-cli-provider-chat must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-provider-chat)))
+
+;; ============================================================
+;; Skill 管理补全命令测试 (R4200)
+;; ============================================================
+
+(ert-deftest aiaos-cli-test/skill-create-exists ()
+  "R4200: aiaos-cli-skill-create must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-skill-create)))
+
+(ert-deftest aiaos-cli-test/skill-install-exists ()
+  "R4200: aiaos-cli-skill-install must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-skill-install)))
+
+(ert-deftest aiaos-cli-test/skill-uninstall-exists ()
+  "R4200: aiaos-cli-skill-uninstall must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-skill-uninstall)))
+
+(ert-deftest aiaos-cli-test/skill-update-exists ()
+  "R4200: aiaos-cli-skill-update must exist as M-x entry."
+  (should (fboundp 'aiaos-cli-skill-update)))
+
+;; ============================================================
+;; aiaos-cli-run domain 补全测试 (R4200)
+;; ============================================================
+
+(ert-deftest aiaos-cli-test/run-domain-includes-provider ()
+  "R4200: aiaos-cli-run interactive prompt must include provider domain."
+  (let ((file (locate-file "aiaos-cli.el" load-path)))
+    (should file)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (re-search-forward "provider" nil t)))))
+

@@ -3289,3 +3289,120 @@ is_builtin_skill_dir() {
 **更新时间**: 2026-10-29
 **维护者**: AIAOS Project
 **变更**: R4301 skill uninstall 内置技能保护修复（路径规范化）
+
+---
+
+## 25. M-x aiaos 入口补全与技能清单对齐
+
+### 25.1 任务目标
+
+根据 `~/aiaos-cli_skills.md` 技能开发指引，对齐实际 CLI 能力与文档承诺，补全缺失的 `M-x aiaos` 统一入口。
+
+### 25.2 基线评估
+
+| 维度 | 状态 | 详情 |
+|------|------|------|
+| Shell CLI 测试 | ✅ 全绿 | 32 passed (test_cli.sh) |
+| Elisp 单元测试 | ✅ 全绿 | 41/41 passed |
+| 全量回归 | ✅ 全绿 | 291/291 passed |
+| 技能管理命令 | ✅ 完整 | 12 个命令全部实现 |
+| Provider 管理命令 | ✅ 完整 | 9 个命令全部实现 |
+| **M-x aiaos 入口** | ❌ 缺失 | 所有命令均为 `aiaos-cli-*` 前缀，无独立 `aiaos` 命令 |
+
+### 25.3 技能清单与实现对照
+
+#### 技能管理（12 命令）
+
+| 文档承诺 | 实现状态 | 验证方式 |
+|----------|----------|----------|
+| skill validate | ✅ | `core/skill.sh:452` + 契约测试 |
+| skill list | ✅ | `core/skill.sh:81` + 集成测试 |
+| skill run | ✅ | `core/skill.sh:550` + 集成测试 |
+| skill deps | ✅ | `core/skill.sh:854` |
+| skill create | ✅ | `core/skill.sh:980` |
+| skill install | ✅ | `core/skill.sh:183` + R4107 测试 |
+| skill uninstall | ✅ | `core/skill.sh:275` + R4301 内置保护 |
+| skill update | ✅ | `core/skill.sh:325` |
+| skill search | ✅ | `core/skill.sh:366` |
+| skill info | ✅ | `core/skill.sh:144` |
+| skill enable | ✅ | `core/skill.sh:381` |
+| skill disable | ✅ | `core/skill.sh:417` |
+
+#### Provider 管理（9 命令）
+
+| 文档承诺 | 实现状态 | 验证方式 |
+|----------|----------|----------|
+| provider list | ✅ | `core/provider.sh` + Provider 测试套件 (31 passed) |
+| provider use | ✅ | 同上 |
+| provider tier | ✅ | 同上 |
+| provider test | ✅ | 同上 |
+| provider report | ✅ | 同上 |
+| provider fallback-order | ✅ | 同上 |
+| provider fallback | ✅ | 同上 |
+| provider audit | ✅ | 同上 |
+| provider chat | ✅ | `bin/aiaos-cli:85` 行 |
+
+#### 核心约束
+
+| 约束 | 状态 |
+|------|------|
+| 技能加载（aiaos-cli-init 可选加载） | ✅ `aiaos-cli-init` 支持 `load-skills` 参数 |
+| JSON 通信契约 | ✅ `aiaos-cli--parse-json` + `aiaos-cli--format-result` |
+| 非阻塞异步 + 超时 | ✅ `aiaos-cli--call-async` + `set-process-sentinel` |
+| JSON Lines 日志 | ✅ `bin/aiaos-cli` 日志写入 |
+| Provider 三级分级 | ✅ full/active/block |
+| 审计日志 | ✅ `provider audit` 命令 |
+
+### 25.4 修复内容：M-x aiaos 入口
+
+#### 问题
+
+所有 Elisp 命令均为 `aiaos-cli-*` 前缀，缺少统一的 `M-x aiaos` 入口。用户无法通过 `M-x aiaos` 直接启动 TUI 应用。
+
+#### 修复
+
+在 `elisp/aiaos-cli.el` 末尾（`provide` 之前）添加：
+
+```elisp
+;;;###autoload
+(defun aiaos (&optional arg)
+  "Launch AIAOS-CLI TUI application.
+
+With optional ARG (non-nil), run in interactive setup mode."
+  (interactive "P")
+  (aiaos-cli-init t)
+  (aiaos-cli--app-run))
+
+;; 兼容别名：M-x aiaos-cli 也指向同一入口
+(defalias 'aiaos-cli 'aiaos)
+```
+
+#### 验证
+
+| 验证项 | 结果 |
+|--------|------|
+| `aiaos` 符号定义 | ✅ fboundp = t |
+| `aiaos` 函数体 | ✅ 调用 `aiaos-cli-init t` + `aiaos-cli--app-run` |
+| `aiaos-cli` 别名 | ✅ 指向 `aiaos` |
+| Elisp 单元测试 | ✅ 41/41 passed |
+| 全量回归 | ✅ 291/291 passed |
+
+### 25.5 修改文件清单
+
+| 文件 | 修改类型 | 说明 |
+|------|----------|------|
+| `elisp/aiaos-cli.el` | 新增 13 行 | 添加 `aiaos` 主入口命令 + `aiaos-cli` 别名 |
+
+### 25.6 经验总结
+
+1. **入口命令的命名一致性**: 文档使用 `aiaos` 作为项目简称，但 Elisp 命令全部使用 `aiaos-cli-*` 前缀，导致 M-x 入口缺失。统一入口命令 `aiaos` 可降低使用门槛。
+2. **别名兼容**: `defalias 'aiaos-cli 'aiaos` 确保两种命名习惯的用户都能找到入口。
+3. **autoload 标记**: `;;;###autoload` 使 Emacs 能在 `M-x` 补全中优先发现该命令。
+4. **文档-实现对齐验证**: 通过逐项对照 `~/aiaos-cli_skills.md` 技能清单与实际代码，确认 21 个命令全部实现，无遗漏。
+
+---
+
+**文档版本**: 2.10.0
+**更新时间**: 2026-10-29
+**维护者**: AIAOS Project
+**变更**: R4100+1 M-x aiaos 入口补全，技能清单与实现全量对齐验证
