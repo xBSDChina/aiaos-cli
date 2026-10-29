@@ -55,6 +55,24 @@ show_help() {
   aiaos-cli skill install git@github.com:user/aiaos-skill-example.git
 EOF
 }
+# R4302: 抽取公共选项解析，消除 --format/--verbose 重复解析
+# 原先每个函数各自实现 while-case 解析 --format/--verbose，共 6+ 处重复
+# 现统一为 parse_common_opts，设置全局变量后调用方从 REMAINING 取剩余参数
+parse_common_opts() {
+    AIAOS_PARSE_FMT="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
+    AIAOS_PARSE_VERBOSE="${AIAOS_CLI_VERBOSE:-false}"
+    AIAOS_PARSE_REMAINING=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --verbose) AIAOS_PARSE_VERBOSE=true; shift ;;
+            --format) AIAOS_PARSE_FMT="$2"; export AIAOS_CLI_OUTPUT_FORMAT="$AIAOS_PARSE_FMT"; shift 2 ;;
+            --format=*) AIAOS_PARSE_FMT="${1#*=}"; export AIAOS_CLI_OUTPUT_FORMAT="$AIAOS_PARSE_FMT"; shift ;;
+            -h|--help) show_help; exit 0 ;;
+            *) AIAOS_PARSE_REMAINING+=("$1"); shift ;;
+        esac
+    done
+}
+
 
 discover_skills() {
     for dir in "${SKILL_DIRS[@]}"; do
@@ -79,18 +97,10 @@ print(json.dumps(data))
 }
 
 skill_list() {
-    local format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
-    local verbose=false
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --verbose) verbose=true; shift ;;
-            --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
-            --format=*) format="${1#*=}"; shift; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
-            -h|--help) show_help; exit 0 ;;
-            *) break ;;
-        esac
-    done
+    parse_common_opts "$@"
+    local format="$AIAOS_PARSE_FMT"
+    local verbose="$AIAOS_PARSE_VERBOSE"
+    set -- "${AIAOS_PARSE_REMAINING[@]}"
 
     # R2052 (PERF-002): 合并原先 2N 次 python3 调用（N=技能数）为 1 次。
     # 根因：旧实现对每个 skill.yaml 各起 1 次 parse_skill_yaml（YAML->JSON）
@@ -143,14 +153,14 @@ else:
 
 skill_info() {
     local name=""
-    local fmt="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
+    parse_common_opts "$@"
+    local fmt="$AIAOS_PARSE_FMT"
+    set -- "${AIAOS_PARSE_REMAINING[@]}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
             --name=*) name="${1#*=}"; shift ;;
-            --format) fmt="$2"; shift 2 ;;
-            --format=*) fmt="${1#*=}"; shift ;;
             -h|--help) show_help; exit 0 ;;
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
@@ -364,12 +374,13 @@ skill_update() {
 }
 
 skill_search() {
-    local query="" format="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
+    local query=""
+    parse_common_opts "$@"
+    local format="$AIAOS_PARSE_FMT"
+    set -- "${AIAOS_PARSE_REMAINING[@]}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
-            --format=*) format="${1#*=}"; shift; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
             *) query="$1"; shift ;;
         esac
     done
@@ -451,14 +462,14 @@ with open(sys.argv[1], 'w') as f:
 
 skill_validate() {
     local name=""
-    local fmt="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
+    parse_common_opts "$@"
+    local fmt="$AIAOS_PARSE_FMT"
+    set -- "${AIAOS_PARSE_REMAINING[@]}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
             --name=*) name="${1#*=}"; shift ;;
-            --format) fmt="$2"; shift 2 ;;
-            --format=*) fmt="${1#*=}"; shift ;;
             -h|--help) show_help; exit 0 ;;
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
@@ -563,8 +574,8 @@ skill_run() {
             --args=*) args_json="${1#*=}"; shift ;;
             --options) opts_json="$2"; shift 2 ;;
             --options=*) opts_json="${1#*=}"; shift ;;
-            --format) format="$2"; shift 2 ;;
-            --format=*) format="${1#*=}"; shift ;;
+            --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
+            --format=*) format="${1#*=}"; shift; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
             -h|--help) show_help; exit 0 ;;
             # R850: 未知短选项收集为 skill 级 options（透传给技能命令），
             #       避免与顶层选项冲突直接报错。
@@ -852,13 +863,14 @@ if kept:
 # 范式来源: design doc §5.4 P2 "技能依赖图：拓扑排序加载、循环依赖检测"
 # ---------------------------------------------------------------------------
 skill_deps() {
-    local name="" fmt="${AIAOS_CLI_OUTPUT_FORMAT:-table}"
+    local name=""
+    parse_common_opts "$@"
+    local fmt="$AIAOS_PARSE_FMT"
+    set -- "${AIAOS_PARSE_REMAINING[@]}"
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name) name="$2"; shift 2 ;;
             --name=*) name="${1#*=}"; shift ;;
-            --format) fmt="$2"; shift 2 ;;
-            --format=*) fmt="${1#*=}"; shift ;;
             -h|--help) show_help; exit 0 ;;
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac

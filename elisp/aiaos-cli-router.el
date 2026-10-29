@@ -27,7 +27,7 @@
     body))
 
 (require 'cl-lib)
-(declare-function copy-list (cl))
+(declare-function cl-copy-list (cl))
 (require 'aiaos-cli-component)
 (require 'aiaos-cli-context)
 
@@ -105,6 +105,7 @@ PATH 是路径
 ROUTES 是路由表（可选，默认全局路由表）
 
 返回匹配的路由对象或 nil。"
+  (cl-block aiaos-cli--router-match
   (let ((route-table (or routes aiaos-cli--routes))
         (matched nil))
     (dolist (route route-table)
@@ -116,7 +117,7 @@ ROUTES 是路由表（可选，默认全局路由表）
         (when (string-match (aiaos-cli--route-path route) path)
           (setq matched route)
           (cl-return-from aiaos-cli--router-match matched))))
-    matched))
+    matched)))
 
 ;; 导航到指定路径
 (defun aiaos-cli--router-navigate (path &optional params)
@@ -274,7 +275,7 @@ ROUTE 是路由对象
   (if (null aiaos-cli--router-middleware)
       route
     (let ((middleware (car aiaos-cli--router-middleware))
-          (rest (cdr aiaos-cli--router-middleware)))
+          (_rest (cdr aiaos-cli--router-middleware)))
       ;; 简化版：直接调用中间件
       (funcall middleware route))))
 
@@ -313,7 +314,7 @@ PATH 是目标路径，BODY 是链接内容。
 
 
 ;; 路由参数提取
-(defun aiaos-cli--router--extract-params (path route)
+(defun aiaos-cli--router--extract-params (_path _route)
   "从路径提取参数
 
 PATH 是实际路径
@@ -362,7 +363,7 @@ ROUTE 是路由对象（可选，默认当前路由）"
   "获取路由历史
 
 返回路由栈的副本。"
-  (copy-list aiaos-cli--route-stack))
+  (cl-copy-list aiaos-cli--route-stack))
 
 ;; 清空路由历史
 (defun aiaos-cli--router-clear-history ()

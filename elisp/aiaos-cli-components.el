@@ -49,7 +49,7 @@ BODY 是文本内容
   (let ((component (make-aiaos-cli--component :name 'text)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
-          (lambda (buffer)
+          (lambda (_buffer)
             (insert (mapconcat #'identity body ""))))
     component))
 
@@ -65,11 +65,10 @@ CONTENT 是边框内容（可选）
 
 示例:
   (aiaos-cli-component-border \"My Border\" \"Content\")"
-  (let ((component (make-aiaos-cli--component :name 'border))
-        (theme (aiaos-cli--theme-current)))
+  (let ((component (make-aiaos-cli--component :name 'border)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
-          (lambda (buffer)
+          (lambda (_buffer)
             ;; 渲染边框
             (insert-char ?│ (max 1 (1+ (length title))))
             (insert " " title " ")
@@ -95,13 +94,13 @@ ITEMS 是列表项列表
 SELECTED-IDX 是选中项的索引（可选）
 
 示例:
-  (aiaos-cli-component-list '(\"Item 1\" \"Item 2\" \"Item 3\") 0)"
+  (aiaos-cli-component-list `(\"Item 1\" \"Item 2\" \"Item 3\") 0)"
   (let ((component (make-aiaos-cli--component :name 'list))
         (theme (aiaos-cli--theme-current))
         (selected-state (aiaos-cli--state-create (or selected-idx 0))))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
-          (lambda (buffer)
+          (lambda (_buffer)
             (dolist (item items)
               ;; 获取当前索引
               (let* ((current-idx (cl-position item items))
@@ -130,11 +129,10 @@ PLACEHOLDER 是占位符文本
 示例:
   (aiaos-cli-component-input \"Enter your name\")"
   (let ((component (make-aiaos-cli--component :name 'input))
-        (theme (aiaos-cli--theme-current))
         (value-state (aiaos-cli--state-create "")))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
-          (lambda (buffer)
+          (lambda (_buffer)
             ;; 渲染输入框边框
             (insert "┃ ")
             ;; 渲染输入值或占位符
@@ -163,15 +161,14 @@ CONTENT 是模态框内容
 示例:
   (aiaos-cli-component-modal \"Confirm\" \"Are you sure?\")"
   (let ((component (make-aiaos-cli--component :name 'modal))
-        (theme (aiaos-cli--theme-current))
         (visible-state (aiaos-cli--state-create t)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
-          (lambda (buffer)
+          (lambda (_buffer)
             ;; 如果可见，渲染模态框
             (when (aiaos-cli--state-get visible-state)
               ;; 渲染遮罩
-              (insert (make-string 80 ?\u2588))
+              (insert (make-string 80 ?█))
               (insert ?\n)
               ;; 渲染标题
               (insert (propertize title 'face 'aiaos-cli-modal-title))
@@ -195,14 +192,13 @@ HEADERS 是表头列表
 ROWS 是行列表，每行是单元格列表
 
 示例:
-  (aiaos-cli-component-table '(\"Name\" \"Value\")
+  (aiaos-cli-component-table `(\"Name\" \"Value\")
     '((\"Key1\" \"Value1\")
       (\"Key2\" \"Value2\")))"
-  (let ((component (make-aiaos-cli--component :name 'table))
-        (theme (aiaos-cli--theme-current)))
+  (let ((component (make-aiaos-cli--component :name 'table)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
-          (lambda (buffer)
+          (lambda (_buffer)
             ;; 渲染表头
             (dolist (header headers)
               (insert header "\t"))
@@ -232,11 +228,10 @@ LABEL 是标签（可选）
 示例:
   (aiaos-cli-component-progress 75 100 \"Downloading\")"
   (let ((component (make-aiaos-cli--component :name 'progress))
-        (theme (aiaos-cli--theme-current))
         (current-state (aiaos-cli--state-create current)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
-          (lambda (buffer)
+          (lambda (_buffer)
             ;; 计算进度百分比
             (let* ((cur (aiaos-cli--state-get current-state))
                    (pct (if (zerop total)
@@ -377,7 +372,6 @@ TABS 是标签列表，每个标签是 (名称 . 组件) 对
     (\"Tab 1\" . comp1)
     (\"Tab 2\" . comp2))"
   (let ((component (make-aiaos-cli--component :name 'tabs))
-        (theme (aiaos-cli--theme-current))
         (active-tab (aiaos-cli--state-create 0)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
@@ -389,7 +383,7 @@ TABS 是标签列表，每个标签是 (名称 . 组件) 对
               (insert " │ "))
             (insert ?\n)
             ;; 渲染分隔线
-            (insert (make-string 80 ?\u2500))
+            (insert (make-string 80 ?─))
             (insert ?\n)
             ;; 渲染当前标签的内容
             (let* ((current-idx (aiaos-cli--state-get active-tab))
@@ -418,7 +412,7 @@ SHORTCUTS 是快捷键列表，每个快捷键是 (描述 . 按键) 对
         (theme (aiaos-cli--theme-current)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
-          (lambda (buffer)
+          (lambda (_buffer)
             ;; 渲染快捷键
             (dolist (shortcut shortcuts)
               (insert (propertize (cdr shortcut) 'face 'aiaos-cli-shortcut-key))
@@ -426,7 +420,7 @@ SHORTCUTS 是快捷键列表，每个快捷键是 (描述 . 按键) 对
               (insert (propertize (car shortcut) 'face 'default))
               (insert ?\n))
             ;; 填充剩余空间
-            (dotimes (i (max 0 (- 80 (* 2 (length shortcuts)))))
+            (dotimes (_ (max 0 (- 80 (* 2 (length shortcuts)))))
               (insert ?\s))
             (insert ?\n)))
     component))
@@ -458,24 +452,24 @@ WINDOW-SIZE 是可视窗口大小（可选，默认20）
               ;; 渲染标题
               (insert (format "Virtual List [%d items, showing %d-%d]\n"
                                total start end))
-              (insert (make-string 40 ?\u2500) "\n")
+              (insert (make-string 40 ?─) "\n")
               ;; 渲染可视范围内的项
               (dotimes (i (- end start))
                 (let* ((idx (+ start i))
                        (item (nth idx items))
-                       (is-selected (= idx (aiaos-cli--state-get selected-state))))
+                       (is-selected (= idx (aiaos-cli--state-get selected-state)))))
                   (if is-selected
                       (insert (aiaos-cli--theme-icon theme :pointer) " ")
                     (insert "  "))
                   (insert (format "%d: %S" idx item) "\n")))
               ;; 渲染滚动提示
               (when (> total ws)
-                (insert "\n" (make-string 40 ?\u2500) "\n")
+                (insert "\n" (make-string 40 ?─) "\n")
                 (insert "[↑↓ scroll | ↑↓ selected | q quit]")
               ))))
     ;; 添加状态到组件
     (setf (aiaos-cli--component-state component) (list selected-state scroll-state))
-    component))
+    component)
 
 ;; 初始化组件库
 (defun aiaos-cli-components-init ()

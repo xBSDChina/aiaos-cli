@@ -47,6 +47,7 @@
 (require 'aiaos-cli-components)
 (require 'aiaos-cli-router)
 (require 'aiaos-cli-app)
+(require 'aiaos-cli-command)
 
 (defgroup aiaos-cli nil
   "AIAOS-CLI Emacs frontend."
@@ -441,6 +442,233 @@ R1210: 新增可选 LOAD-SKILLS 参数。为真时自动发现并加载所有未
              (if load-skills-flag
                  (format ", skills=%s" aiaos-cli--loaded-skills)
                "")))))
+
+
+;; ============================================================
+;; 命令树：结构化功能查阅（R4100+2）
+;; ============================================================
+;; 该数据结构定义 aiaos-cli 全部顶层命令及子命令，
+;; 供 aiaos-cli--register-command-tree 注册到 command 模块，
+;; 并由 aiaos-cli-command-tree 渲染为人工审核界面。
+
+(defvar aiaos-cli--command-tree
+  '((session . (("new" . "创建新会话")
+                 ("list" . "列出所有会话")
+                 ("show" . "显示会话详情")
+                 ("switch" . "切换当前会话")
+                 ("archive" . "归档会话")
+                 ("delete" . "删除会话")
+                 ("current" . "显示当前会话")))
+    (context . (("show" . "显示当前上下文")
+                 ("save" . "保存上下文")
+                 ("load" . "加载上下文")
+                 ("clear" . "清空上下文")
+                 ("export" . "导出上下文")
+                 ("list" . "列出所有上下文")
+                 ("import" . "导入上下文")))
+    (skill . (("install" . "安装技能")
+              ("uninstall" . "卸载技能")
+              ("list" . "列出所有技能")
+              ("update" . "更新技能")
+              ("info" . "显示技能详情")
+              ("search" . "搜索技能")
+              ("validate" . "验证技能元数据")
+              ("run" . "运行技能命令")
+              ("deps" . "依赖解析/拓扑排序")
+              ("create" . "创建技能骨架")
+              ("enable" . "启用技能")
+              ("disable" . "禁用技能")))
+    (agent . (("chat" . "与Agent对话")
+              ("delegate" . "委托任务给Agent")
+              ("tool" . "调用Agent工具")
+              ("history" . "查看对话历史")
+              ("status" . "查看Agent状态")))
+    (project . (("init" . "初始化项目")
+                ("sync" . "同步项目")
+                ("build" . "构建项目")
+                ("deploy" . "部署项目")
+                ("status" . "查看项目状态")
+                ("info" . "查看项目详情")))
+    (config . (("get" . "获取配置项")
+               ("set" . "设置配置项")
+               ("list" . "列出所有配置")
+               ("edit" . "编辑配置文件")
+               ("validate" . "验证配置")
+               ("migrate" . "迁移配置")
+               ("reset" . "重置配置")))
+    (log . (("tail" . "查看日志尾部")
+            ("search" . "搜索日志")
+            ("export" . "导出日志")
+            ("analyze" . "分析日志")
+            ("list" . "列出日志文件")))
+    (provider . (("list" . "列出Providers")
+                 ("use" . "使用Provider")
+                 ("test" . "测试Provider")
+                 ("tier" . "设置Provider层级")
+                 ("fallback" . "设置Fallback策略")
+                 ("fallback-order" . "设置Fallback顺序")
+                 ("chat" . "与Provider对话")
+                 ("audit" . "审计Provider")
+                 ("report" . "生成Provider报告"))))
+  "嵌套列表结构：(顶层命令 . ((子命令 . 描述) ...))。R4100+2 补全全部8域。")
+
+(defvar aiaos-cli--extra-top-commands
+  '(("doctor" . "环境诊断 (check, fix, report)")
+    ("help" . "显示帮助")
+    ("version" . "显示版本"))
+  "无子命令的顶层命令（直接映射到 aiaos-cli-doctor 等）。")
+
+;;;###autoload
+(defun aiaos-cli--register-command-tree ()
+  "将 aiaos-cli--command-tree 注册到 command 模块的注册表。
+
+R4100+2: 集成 aiaos-cli-command 模块，修复孤儿模块问题。
+此前 command.el 定义了注册/查询系统但从未被集成，
+现在通过该函数初始化并注册全部命令，供
+aiaos-cli-command-tree 查阅。"
+  (aiaos-cli--command-init)
+  ;; 注册顶层命令及其子命令
+  (dolist (entry aiaos-cli--command-tree)
+    (let* ((domain (car entry))
+           (subs (cdr entry)))
+      ;; 顶层命令：handler 为 nil，仅作为容器
+      (aiaos-cli--command-register
+       (format "%s" domain)
+       (aiaos-cli--command-make
+        (format "%s" domain)
+        (format "%s 域命令" domain)
+        nil))
+      ;; 注册子命令
+      (dolist (sub subs)
+        (let* ((name (car sub))
+               (desc (cdr sub))
+               (cmd-name (format "%s %s" domain name)))
+          (aiaos-cli--command-register
+           cmd-name
+           (aiaos-cli--command-make
+            name desc nil))))))
+  ;; 注册无子命令的顶层命令
+  (dolist (entry aiaos-cli--extra-top-commands)
+    (aiaos-cli--command-register
+     (format "%s" (car entry))
+     (aiaos-cli--command-make
+      (car entry) (cdr entry) nil)))
+  aiaos-cli--command-registry)
+
+;;;###autoload
+(defun aiaos-cli-command-tree (&optional buffer)
+  "在 BUFFER（默认 \*aiaos-cli-commands\*）中渲染 aiaos-cli 全部命令。
+
+R4100+2: 供人工审核查阅全部功能的结构化界面。
+命令来源于 aiaos-cli--command-tree 静态数据 + CLI --help 动态输出。
+
+交互命令：
+  \[aiaos-cli-command-tree-expand]  展开/折叠子命令
+  \[aiaos-cli-command-run-current]  执行当前行命令
+  \[aiaos-cli-command-refresh]     刷新命令树"
+  (interactive)
+  (aiaos-cli--register-command-tree)
+  (let ((buf (or buffer (get-buffer "*aiaos-cli-commands*"))))
+    (if (null buf)
+        (setq buf (get-buffer-create "*aiaos-cli-commands*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (aiaos-cli--render-command-tree (current-buffer)))
+      (aiaos-cli-command-tree-mode))
+    (pop-to-buffer buf)))
+
+
+(defvar aiaos-cli-command-tree-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "e" #'aiaos-cli-command-tree-expand)
+    (define-key map "r" #'aiaos-cli-command-tree-refresh)
+    (define-key map [return] #'aiaos-cli-command-run-current)
+    map)
+  "命令树模式 keymap。")
+
+(defvar aiaos-cli--command-tree-collapsed nil
+  "已折叠的顶层命令列表（非空表示该顶层命令的子命令不显示）。")
+
+(defun aiaos-cli--render-command-tree (buf)
+  "在 BUF 中渲染命令树。"
+  (let ((inhibit-read-only t))
+    (goto-char (point-min))
+    (insert "# aiaos-cli 命令树\n")
+    (insert "# 供人工审核查阅全部功能\n\n")
+    (dolist (entry aiaos-cli--command-tree)
+      (let* ((domain (car entry))
+             (subs (cdr entry))
+             (collapsed (memq domain aiaos-cli--command-tree-collapsed)))
+        (insert (format "## %s\n\n" domain))
+        (unless collapsed
+          (dolist (sub subs)
+            (let* ((name (car sub))
+                   (desc (cdr sub)))
+              (insert (format "  - %-15s %s\n" name desc))))
+          (insert "\n")))))
+    ;; 渲染无子命令的顶层命令
+    (dolist (entry aiaos-cli--extra-top-commands)
+      (insert (format "## %s\n  - %s\n\n"
+                      (car entry) (cdr entry))))
+    (insert "---\n")
+    (insert (format "命令总数: %d（含子命令）\n"
+                    (aiaos-cli--command-count-tree aiaos-cli--command-tree)))
+    (insert "提示: 按 e 折叠/展开, r 刷新, RET 执行当前行命令\n\n"))
+
+(defun aiaos-cli--command-count-tree (tree)
+  "递归统计命令树中的命令总数（含顶层和子命令）。"
+  (let ((count 0))
+    (dolist (entry tree)
+      (setq count (+ count 1))
+      (setq count (+ count (length (cdr entry)))))
+    count))
+
+(defun aiaos-cli-command-tree-refresh ()
+  "刷新命令树显示。"
+  (interactive)
+  (aiaos-cli--render-command-tree (current-buffer)))
+
+(defun aiaos-cli-command-tree-expand ()
+  "展开/折叠当前顶层命令的子命令。"
+  (interactive)
+  (let ((line (thing-at-point 'line))
+        (match (re-search-backward "^## (\\S+)" nil 'boundary)))
+    (when match
+      (let ((domain (match-string 1)))
+        (if (memq domain aiaos-cli--command-tree-collapsed)
+            (setq aiaos-cli--command-tree-collapsed
+                  (remq domain aiaos-cli--command-tree-collapsed))
+          (setq aiaos-cli--command-tree-collapsed
+                (cons domain aiaos-cli--command-tree-collapsed)))
+        (aiaos-cli-command-tree-refresh)))))
+
+(defun aiaos-cli-command-run-current ()
+  "执行当前行的命令。
+
+若当前行是子命令，执行对应 aiaos-cli-<domain>-<subcommand>；
+若是顶层命令，执行 aiaos-cli-<domain>。"
+  (interactive)
+  (let ((line (thing-at-point 'line)))
+    (when (string-match "\`\s*-\s+\(\\S+\)" line)
+      (let* ((sub (match-string 1 line))
+             (match (re-search-backward "^## \(\\S+\)" nil 'boundary)))
+        (if match
+            (let ((domain (match-string 1)))
+              (let ((fn (intern (format "aiaos-cli-%s-%s" domain sub))))
+                (if (fboundp fn)
+                    (call-interactively fn)
+                  (message "未找到命令函数: %s" fn))))
+          (message "无法确定所属域"))))))
+
+(defun aiaos-cli-command-tree-mode ()
+  "命令树浏览模式。"
+  (interactive)
+  (make-local-variable 'aiaos-cli--command-tree-collapsed)
+  (make-local-variable 'mode-line-format)
+  (setq mode-line-format '(:eval (format " aiaos-commands ")))
+  (setq major-mode 'aiaos-cli-command-tree-mode))
+
 
 ;;;###autoload
 (defun aiaos-cli-help ()

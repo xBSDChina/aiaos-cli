@@ -21,7 +21,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(declare-function cl-last (cl))
 (require 'aiaos-cli-state)
 
 (defgroup aiaos-cli-lifecycle nil
@@ -142,9 +141,9 @@ BODY 是要执行的副作用
      ,deps
      (lambda () ,@body)
      ;; 如果有额外的清理函数，提取出来
-     ,@(when (cl-last body)
-         (if (eq (car (cl-last body)) ':cleanup)
-             (list (cadr (cl-last body)))
+     ,@(when (last body)
+         (if (eq (car (last body)) ':cleanup)
+             (list (cadr (last body)))
            nil))))
 
 ;; use-on-drop 宏
@@ -162,7 +161,7 @@ BODY 是要执行的清理代码
      (lambda () ,@body)))
 
 ;; 组件挂载
-(defun aiaos-cli--lifecycle-mount (component-id &rest body)
+(defmacro aiaos-cli--lifecycle-mount (component-id &rest body)
   "挂载组件
 
 COMPONENT-ID 是组件 ID
@@ -174,7 +173,7 @@ BODY 是要执行的挂载代码
     (setf (aiaos-cli--component-registry-mounted registry) t)
     (setf aiaos-cli--current-component component-id)
     (unwind-protect
-        (progn ,@body)
+        (mapc (lambda (form) (eval form (list component-id))) body)
       (setf aiaos-cli--current-component old-component)))
   component-id)
 
@@ -202,7 +201,7 @@ COMPONENT-ID 是组件 ID
       t)))
 
 ;; 组件更新
-(defun aiaos-cli--lifecycle-update (component-id &rest body)
+(defmacro aiaos-cli--lifecycle-update (component-id &rest body)
   "更新组件
 
 COMPONENT-ID 是组件 ID
@@ -211,9 +210,10 @@ BODY 是要执行的更新代码
 会重新执行所有副作用（如果依赖变化）。"
   (let* ((registry (aiaos-cli--lifecycle--get-registry component-id))
          (old-component aiaos-cli--current-component))
+    (ignore registry)
     (setf aiaos-cli--current-component component-id)
     (unwind-protect
-        (progn ,@body)
+        (mapc (lambda (form) (eval form (list component-id))) body)
       (setf aiaos-cli--current-component old-component)))
   component-id)
 
@@ -228,6 +228,7 @@ BODY 是要执行的更新代码
 
 ;; 检查副作用是否应该运行
 (defun aiaos-cli--lifecycle--should-run (effect)
+  (ignore effect)
   "检查副作用是否应该运行"
   ;; 简化版：总是运行（实际应用中需要比较依赖值）
   t)

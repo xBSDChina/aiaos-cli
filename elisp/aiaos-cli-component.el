@@ -114,7 +114,7 @@ DEFAULT 是默认值（可选）"
 示例:
   (aiaos-cli--props
     :title \"My Component\"
-    :items '(1 2 3))"
+    :items `(1 2 3))"
   `(aiaos-cli--component-create 'props
     ,@(mapcar (lambda (pair)
                 `(,(car pair) . ,(cdr pair)))
@@ -153,7 +153,7 @@ BUFFER 是目标 buffer（可选，默认当前 buffer）
         (let ((inhibit-modification-hooks t))
           ;; 执行渲染函数
           (when (aiaos-cli--component-render component)
-            (funcall (aiaos-cli--component-render component) (point)))
+            (funcall (aiaos-cli--component-render component) target-buffer))
           ;; 保存渲染结果
           (setf result (buffer-string))))
       (when (not (eq target-buffer old-buffer))
@@ -169,7 +169,7 @@ BODY 是渲染代码
 
 示例:
   (aiaos-cli--component-render-fn comp
-    (insert "Hello World\n")))"
+    (insert \"Hello World\\n\"))"
   (declare (indent 1))
   `(setf (aiaos-cli--component-render ,component)
          (lambda (buffer)
@@ -184,11 +184,11 @@ BODY 是组件体
 
 示例:
   (aiaos-cli--define-component my-component
-    (:title "My Component")
+    (:title \"My Component\")
     (aiaos-cli--use-state 0)
     ;; 渲染函数
     (aiaos-cli--component-render-fn comp
-      (insert title "\n")))"
+      (insert title \"\\n\"))"
   (declare (indent 1))
   `(cl-defun ,name (props)
      "组件函数"
@@ -296,8 +296,8 @@ BODY 是组件体
 
 示例:
   (aiaos-cli--with-props
-    (:title "My Component"
-     :items '(1 2 3))
+  (:title \"My Component\")
+     :items `(1 2 3))
     ;; 组件体)"
   `(let ((component (make-aiaos-cli--component
                     :name 'hoc-component

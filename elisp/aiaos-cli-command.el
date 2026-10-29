@@ -70,7 +70,7 @@ HANDLER is the handler function"
 
 CMD-NAME is the command name (e.g. \"skill\" or \"skill list\")
 CMD is the command object"
-  (let* ((parts (split-string cmd-name "/"))
+  (let* ((parts (split-string cmd-name " "))
          (parent-path (butlast parts))
          (parent-name (when (= (length parent-path) 1)
                         (car parent-path))))
