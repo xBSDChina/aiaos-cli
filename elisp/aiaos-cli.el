@@ -639,6 +639,7 @@ This is the fix for the long-standing gap noted in the design doc: after
 Reads `skills/<name>/skill.yaml`, loads each `commands/*.el` and each
 `hooks/*.el`, and returns the list of loaded file paths.  Errors are
 signaled with `user-error`."
+  (interactive "sSkill name: ")
   (unless (stringp name)
     (user-error "aiaos-cli-skill-load: NAME must be a string"))
   (unless aiaos-cli--inited
@@ -682,6 +683,7 @@ signaled with `user-error`."
 
 Thin frontend wrapper around aiaos-cli-skill-load plus the generated
 skill function.  Returns the plist result."
+  (interactive "sSkill name: sCommand name: ")
   (aiaos-cli-skill-load name)
   (let ((fn (intern (format "aiaos-cli-skill-%s/%s"
                             name command))))
@@ -697,6 +699,7 @@ skill function.  Returns the plist result."
 加载的技能名列表，并把累计已加载名写入 `aiaos-cli--loaded-skills'。
 
 VERBOSE 为真时逐个 message 提示。已加载过的技能跳过（幂等）。"
+  (interactive "P")
   (require 'json)
   ;; R1317: 修复 TD-025 —— 原 let 里 res/skills 的初始化分别引用了 bin/res，
   ;; 但 let 绑定是同时初始化的，被引用的变量此时还未定义，触发 void-variable。
