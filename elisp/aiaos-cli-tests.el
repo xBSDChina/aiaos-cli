@@ -62,15 +62,21 @@ crash on Emacs 29."
   "R780: assert-binary error message must list all three lookup paths
 so the user can act immediately."
   (let ((saved aiaos-cli-bin)
+        (saved-path (getenv "PATH"))
+        (saved-exec-path exec-path)
         (msg))
     (unwind-protect
         (progn
           (setq aiaos-cli-bin "/tmp/definitely-not-a-real-aiaos-cli-binary")
+          (setenv "PATH" "/usr/bin:/bin")
+          (setq exec-path (list "/usr/bin" "/bin"))
           (let ((fake-home (make-temp-file "aiaos-test-home" t)))
             (setenv "HOME" (file-name-directory fake-home)))
           (condition-case e
               (aiaos-cli--assert-binary)
             (error (setq msg (error-message-string e)))))
+          (setq exec-path saved-exec-path)
+          (setenv "PATH" saved-path)
       (setq aiaos-cli-bin saved))
     (should (stringp msg))
     (should (string-match-p "aiaos-cli-bin=" msg))
