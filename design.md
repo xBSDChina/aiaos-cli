@@ -4535,3 +4535,47 @@ bash tests/run-all.sh
 
 **文档版本**: 2.20.0
 **变更**: 第35章追加，记录 R780 测试环境变量隔离修复
+
+## 36. skill deps DOT 图输出与 agent chat LLM 桥接（R2104 · 2026-10-30）
+
+### 36.1 任务背景
+
+两项增强：
+1. **skill deps --graph dot**：技能依赖图可视化，输出 Graphviz DOT 格式，支持 `--name` 过滤和循环依赖红色虚线标记。
+2. **agent chat LLM 桥接**：通过 `~/.config/aiaos/agent_llm_bridge.py` 连接真实 LLM 后端，无凭据时优雅降级到模拟回复。
+
+### 36.2 实现要点
+
+**skill deps --graph dot**：
+- 在 `core/skill.sh` 的 `skill_deps()` 中新增 `--graph` 选项解析
+- 通过环境变量 `AIAOS_DEPS_GRAPH` 传递到 Python 内嵌脚本
+- DOT 输出：`digraph skill_deps { rankdir=LR; node [shape=box]; ... }`
+- 循环依赖用红色虚线 `[color=red, style=dashed]` 标记
+- 退出码：有循环返回 1，否则 0
+
+**agent chat LLM 桥接**：
+- 检查 `~/.config/aiaos/agent_llm_bridge.py` 是否存在
+- 调用桥接脚本获取真实回复，解析 JSON `reply` 字段
+- 无桥接脚本或无凭据时降级到模拟回复（不崩溃）
+
+### 36.3 验证结果
+
+- 全量测试：308/308 通过（新增 3 项 DOT 测试）
+- DOT 输出通过 graphviz 语法校验
+- agent chat 降级路径正常（无凭据不崩溃）
+- Git 提交：a891349
+
+### 36.4 可复用范式：测试插入位置校验范式
+
+**核心思想**：向现有 Shell 测试脚本插入新测试块时，必须确保插入位置在正确的 `if/fi` 结构之外，否则测试可能被静默跳过。
+
+**操作步骤**：
+1. 插入前先查看目标位置的完整 if/else/fi 结构
+2. 确认插入点不在 else 分支内
+3. 插入后运行 `bash -n` 语法检查
+4. 运行该测试套件，确认新测试实际执行（grep 输出）
+
+**价值**：防止测试被错误嵌套导致静默失效。
+
+**文档版本**: 2.21.0
+**变更**: 第36章追加，记录 R2104 DOT 图输出与 agent chat LLM 桥接
