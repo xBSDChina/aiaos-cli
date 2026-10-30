@@ -4494,3 +4494,44 @@ bash tests/run-all.sh
 
 **文档版本**: 2.19.0
 **变更**: 第34章追加，记录 R1400 + R9001 完整工作
+
+## 35. 测试环境变量隔离修复（R780 · 2026-10-30）
+
+### 35.1 问题
+`aiaos-cli-test/assert-binary-error-paths` 测试在验证 `aiaos-cli--assert-binary` 错误路径时，修改了 `PATH` 和 `exec-path` 环境变量但未恢复，可能污染后续测试执行环境。
+
+### 35.2 修复方案
+在测试的 `unwind-protect` 中添加环境变量保存与恢复：
+
+```elisp
+(let ((saved aiaos-cli-bin)
+      (saved-path (getenv "PATH"))
+      (saved-exec-path exec-path)
+      (msg))
+  (unwind-protect
+      (progn
+        ;; ... 测试逻辑 ...
+        (setq exec-path saved-exec-path)
+        (setenv "PATH" saved-path))
+    (setq aiaos-cli-bin saved)))
+```
+
+### 35.3 验证结果
+- Elisp 测试：55/55 通过
+- Shell 测试：305/305 通过
+- 合计：360/360 通过（零缺陷）
+- Git 提交：eabb9b8
+
+### 35.4 可复用范式：测试环境隔离范式
+
+**核心思想**：测试中修改全局环境变量（`PATH`、`exec-path`、`HOME` 等）必须保存并在 `unwind-protect` 中恢复，确保测试隔离性。
+
+**操作步骤**：
+1. 在 `let` 绑定中保存原始环境变量
+2. 在 `unwind-protect` 的 cleanup 部分恢复
+3. 确保 `setq`/`setenv` 恢复逻辑在 unwind 路径中执行
+
+**价值**：防止测试间污染，确保测试套件可重复执行且结果稳定。
+
+**文档版本**: 2.20.0
+**变更**: 第35章追加，记录 R780 测试环境变量隔离修复
