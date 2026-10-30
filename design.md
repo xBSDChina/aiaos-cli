@@ -4128,3 +4128,129 @@ emacs --batch -L elisp -l aiaos-cli.el --eval "(progn (aiaos-cli-init t) (dolist
 **更新时间**: 2026-10-30  
 **维护者**: AIAOS Project  
 **变更**: R702 领域菜单数据源修复与编译警告消除
+
+---
+
+## 三十一、M-x aiaos 全交互命令矩阵与使用范式（R703 · 2026-10-30）
+
+**日期**: 2026-10-30  
+**触发背景**: 承接前序 R702 领域菜单修复，验证 `M-x aiaos` 入口全部可用性，并沉淀交互命令矩阵与使用范式。
+
+### 31.1 交互命令全矩阵
+
+本次验证确认 `M-x aiaos` 前缀下共 10 个交互命令，全部注册成功且均可通过 `M-x` 调用：
+
+| # | 命令 | 功能 | 后端映射 | 调用方式 |
+|---|------|------|---------|---------|
+| 1 | `aiaos-cli-command-tree` | 可视化命令树浏览 | 静态树 + `--help` | `M-x aiaos-cli-command-tree` |
+| 2 | `aiaos-cli-help` | 显示帮助 | `aiaos-cli --help` | `M-x aiaos-cli-help` |
+| 3 | `aiaos-cli-doctor` | 环境诊断 | `aiaos-cli doctor check` | `M-x aiaos-cli-doctor` |
+| 4 | `aiaos-cli-version` | 显示版本 | `aiaos-cli --version` | `M-x aiaos-cli-version` |
+| 5 | `aiaos-cli-session-list` | 会话列表 | `aiaos-cli session list` | `M-x aiaos-cli-session-list` |
+| 6 | `aiaos-cli-context-show` | 当前上下文 | `aiaos-cli context show` | `M-x aiaos-cli-context-show` |
+| 7 | `aiaos-cli-skill-list` | 技能列表 | `aiaos-cli skill list` | `M-x aiaos-cli-skill-list` |
+| 8 | `aiaos-cli-skill-load-all` | 加载全部技能 | `aiaos-cli skill load-all` | `M-x aiaos-cli-skill-load-all` |
+| 9 | `aiaos-cli-app-start` | 启动 TUI 应用 | TUI 模式 | `M-x aiaos-cli-app-start` |
+| 10 | `aiaos-cli-agent-chat` | Agent 对话 | Agent 交互模式 | `M-x aiaos-cli-agent-chat` |
+
+### 31.2 命令架构分层
+
+```
+M-x aiaos 交互层
+├── 信息展示类 (1-4)
+│   ├── aiaos-cli-command-tree  → 结构化命令浏览
+│   ├── aiaos-cli-help          → 帮助信息
+│   ├── aiaos-cli-doctor        → 环境健康检查
+│   └── aiaos-cli-version       → 版本信息
+├── 领域操作类 (5-8)
+│   ├── aiaos-cli-session-list  → 会话管理
+│   ├── aiaos-cli-context-show  → 上下文管理
+│   ├── aiaos-cli-skill-list    → 技能管理
+│   └── aiaos-cli-skill-load-all → 技能加载
+└── 应用入口类 (9-10)
+    ├── aiaos-cli-app-start     → TUI 主应用
+    └── aiaos-cli-agent-chat    → Agent 对话
+```
+
+### 31.3 Elisp → CLI 调用链范式
+
+所有交互命令遵循统一的 Elisp → CLI 调用链：
+
+```elisp
+;; 1. 交互入口（interactive）
+(defun aiaos-cli-<domain>-<action> ()
+  "描述。"
+  (interactive)
+  ;; 2. 委托 aiaos-cli-run 或直接构建命令
+  (aiaos-cli-run "<domain>" "<action>"))
+
+;; 3. aiaos-cli-run 构建并执行
+(defun aiaos-cli-run (domain action &rest args)
+  (interactive (list
+                (completing-read "Domain: " '(...))
+                (read-string "Action: ")))
+  (let ((cmd (apply 'aiaos-cli--build-cmd (cons domain (cons action args)))))
+    (aiaos-cli--call-async cmd
+      (lambda (status out _err)
+        (aiaos-cli--show-result action out status)))))
+```
+
+### 31.4 可复用范式
+
+#### 范式 31.4.1: 交互命令三层架构范式
+
+```
+第一层: interactive 声明 → 用户可通过 M-x 调用
+第二层: 参数委托 → aiaos-cli-run / aiaos-cli--build-cmd
+第三层: 异步执行 → aiaos-cli--call-async + 回调展示结果
+```
+
+**价值**: 统一调用链降低维护成本，新增命令只需实现第三层。
+
+#### 范式 31.4.2: 命令树可视化范式
+
+```elisp
+;; aiaos-cli-command-tree 提供结构化界面：
+;; - 静态命令树（aiaos-cli--command-tree）
+;; - 动态 CLI 输出（--help）
+;; - 交互操作：展开/折叠、执行当前行、刷新
+```
+
+**价值**: 用户无需记忆命令，可视化浏览全部功能。
+
+#### 范式 31.4.3: 技能加载自动化范式
+
+```elisp
+;; aiaos-cli-skill-load-all 自动发现并加载：
+;; 1. 扫描 skills/ 目录
+;; 2. 检查 skill.yaml 元数据
+;; 3. 跳过 disabled 技能
+;; 4. 执行 on-load hook
+;; 5. 注册技能命令
+```
+
+**价值**: 技能即插即用，无需手动配置。
+
+### 31.5 验证结果汇总
+
+| 验证项 | 结果 | 说明 |
+|--------|------|------|
+| Shell 测试 | ✅ 通过 | 版本/会话/上下文/技能/日志 |
+| Elisp 测试 | ✅ 55/55 通过 | 全量 ERT 测试 |
+| 命令注册 | ✅ 10/10 | 全部可 M-x 调用 |
+| 交互声明 | ✅ 10/10 | 全部含 (interactive) |
+| 技能加载 | ✅ 8 个技能 | base64/date/emacs/file/hello/skill-mgmt/string/text |
+
+### 31.6 使用建议
+
+1. **入门路径**: `M-x aiaos-cli-help` → `M-x aiaos-cli-doctor` → `M-x aiaos-cli-command-tree`
+2. **日常操作**: `M-x aiaos-cli-skill-list` → `M-x aiaos-cli-session-list` → `M-x aiaos-cli-context-show`
+3. **深度使用**: `M-x aiaos-cli-app-start`（TUI）或 `M-x aiaos-cli-agent-chat`（对话）
+4. **技能管理**: `M-x aiaos-cli-skill-load-all` 一键加载全部技能
+
+---
+
+**文档版本**: 2.16.0  
+**更新时间**: 2026-10-30  
+**维护者**: AIAOS Project  
+**变更**: R703 M-x aiaos 全交互命令矩阵与使用范式补充

@@ -1513,18 +1513,19 @@ R702: 简化版参数收集。对于 skill 领域，检查常见参数模式。"
 (defun aiaos-cli-menu-read (&optional domain)
   "显示 AIAOS-CLI 全功能主菜单。
 
-R702: 全功能覆盖修复。枚举所有 12 个领域，动态生成编号菜单。
+R702: 全功能覆盖修复。枚举所有 9 个后端领域，动态生成编号菜单。
 支持两种模式：
   - 交互模式（默认）：显示菜单，用户选择领域
   - 编程模式：传入 DOMAIN 直接进入领域菜单
 
-领域列表（12个）：
+领域列表（9个，对齐后端）：
   session, context, skill, agent, project, config,
-  log, provider, system_info, text-tools, diag, builtin"
+  log, provider, doctor
+  （skills: 另通过 text-tools, file-tools 等技能包提供）"
   (interactive)
   (let ((domains '("skill" "session" "context" "agent"
                    "project" "config" "log" "provider"
-                   "system_info" "text-tools" "diag" "builtin")))
+                   "doctor")))
     (if domain
         ;; 编程模式：直接进入指定领域
         (aiaos-cli-domain-menu domain)
@@ -1532,7 +1533,7 @@ R702: 全功能覆盖修复。枚举所有 12 个领域，动态生成编号菜�
       (let ((keys (mapcar #'car domains)))
         (let ((choice
                (completing-read
-                "选择领域 (共 12 个): "
+                "选择领域 (共 9 个，对齐后端): "
                 keys
                 nil t
                 nil
