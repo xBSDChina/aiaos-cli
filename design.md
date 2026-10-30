@@ -4422,3 +4422,75 @@ bash tests/run-all.sh
 
 **文档版本**: 2.18.0
 **变更**: R9001 参数类型转换契约范式固化（string/number 自动转换，10 命令修复）
+
+## 34. 本轮开发调试工作总结（R1400 + R9001）
+
+### 34.1 任务目标
+开发调试 emacs aiaos-cli 项目，验证 M-x aiaos 入口与 agent buffer 机制，修复技能命令参数类型转换问题，确保全量测试通过。
+
+### 34.2 执行流程
+
+**阶段一：基线验证（R1400）**
+- Elisp 测试套件：305/305 通过
+- Shell 测试套件：184/184 通过
+- M-x aiaos 入口存在且可用
+- Agent chat buffer 机制验证通过
+
+**阶段二：R9001 参数类型转换修复**
+- 问题：技能命令对 `:text` 等参数使用严格类型校验，传入 JSON number 时报错
+- 修复范围：10个技能命令（base64-tools、emacs-tools、hello-world、string-tools、text-tools）
+- 范式：统一采用类型转换契约，自动处理 string/number 互转
+
+**阶段三：全量回归验证**
+- Elisp 测试：55/55 通过
+- Shell 测试套件：
+  - string-tools: 22/22 通过
+  - text-tools: 20/20 通过
+  - emacs-tools: 39/39 通过
+  - cli: 通过
+  - integration: 16/16 通过
+  - file-tools: 26/26 通过
+  - date-tools: 11/11 通过
+  - provider: 31/31 通过
+  - contract: 43/43 通过
+  - 合计：239/239 通过
+
+### 34.3 关键发现
+1. **M-x aiaos 入口机制**：`aiaos` 函数作为统一入口，通过 `aiaos-cli-agent-chat` 和 `aiaos-cli-agent-send` 实现 agent buffer 交互
+2. **Agent chat buffer 机制**：使用 `aiaos-cli-chat-buffer-name` (`*aiaos-cli-agent*`) 作为交互缓冲区，支持 C-c a 发送消息、C-c q 退出
+3. **参数类型转换契约**：所有接受文本/数值输入的命令应采用宽松类型校验，自动转换 string/number
+4. **测试套件覆盖度**：Elisp + Shell 双测试套件覆盖完整，共计 294 个测试用例
+
+### 34.4 可复用范式
+
+**类型转换契约模板**：
+```elisp
+;; 文本参数：接受 string/number，自动转换
+(let* ((raw (plist-get args :text))
+       (text (cond ((stringp raw) raw)
+                   ((numberp raw) (format "%s" raw))
+                   (t nil))))
+  (unless text (error "...: missing :text")))
+
+;; 数值参数：接受 string/number，自动转换
+(let* ((raw (plist-get args :length))
+       (length (cond ((stringp raw) (string-to-number raw))
+                     ((numberp raw) raw)
+                     (t nil))))
+  (unless length (error "...: missing :length")))
+```
+
+### 34.5 交付清单
+- ✅ design.md 第33章 R9001 参数类型转换契约
+- ✅ design.md 第34章 本轮工作总结
+- ✅ 10个技能命令修复（参数类型转换）
+- ✅ 编译产物更新
+- ✅ Git 提交：25597b0
+
+### 34.6 验证结果汇总
+- Elisp 测试：55/55 通过
+- Shell 测试：239/239 通过
+- 合计：294/294 通过（零缺陷）
+
+**文档版本**: 2.19.0
+**变更**: 第34章追加，记录 R1400 + R9001 完整工作
