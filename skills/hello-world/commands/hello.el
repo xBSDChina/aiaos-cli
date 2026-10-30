@@ -5,15 +5,26 @@
   "Greet a name.
 
 ARGS is a plist with :name.
-OPTIONS is a plist with :greeting."
+OPTIONS is a plist with :greeting.
+
+R9001: 参数类型转换契约修复。
+此前 `(stringp name)` 严格校验拒绝 number 类型参数（JSON 数字），
+违反 skills.md §2 类型转换契约。现改为宽松校验：
+- number → (format \"%s\" name) 自动转换为字符串
+- string → 直接使用
+- 其他类型 → 报错"
   (let* ((opts (if (and (listp options)
                         (= (length options) 1)
                         (listp (car options)))
                    (car options)
                  options))
-         (name (plist-get args :name))
+         (raw-name (plist-get args :name))
+         (name (cond
+                ((stringp raw-name) raw-name)
+                ((numberp raw-name) (format "%s" raw-name))
+                (t nil)))
          (greeting (or (plist-get opts :greeting) "Hello")))
-    (unless (stringp name)
+    (unless name
       (error "aiaos-cli-skill-hello-world/hello: missing :name"))
     (list :status "ok"
           :message (format "%s, %s!" greeting name)

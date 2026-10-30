@@ -5,19 +5,21 @@
   "Repeat a string N times.
 
 ARGS is a plist with :text and :times.
-OPTIONS is accepted but unused (kept for forward-compat)."
-  (let* ((text (plist-get args :text))
-         (times (let ((raw (plist-get args :times)))
-                   (if (stringp raw)
-                       (condition-case nil
-                           (string-to-number raw)
-                         (error "aiaos-cli-skill-string-tools/repeat: :times must be integer"))
-                     raw)))
+OPTIONS is accepted but unused (kept for forward-compat).
+R9001: 参数类型转换契约修复，接受 string/number，自动转换。"
+  (let* ((raw (plist-get args :text))
+         (text (cond ((stringp raw) raw)
+                     ((numberp raw) (format "%s" raw))
+                     (t nil)))
+         (times (let ((raw-t (plist-get args :times)))
+                  (cond ((stringp raw-t) (string-to-number raw-t))
+                        ((numberp raw-t) raw-t)
+                        (t nil))))
          result)
-    (unless (stringp text)
+    (unless text
       (error "aiaos-cli-skill-string-tools/repeat: missing :text"))
-    (unless (integerp times)
-      (error "aiaos-cli-skill-string-tools/repeat: :times must be integer"))
+    (unless times
+      (error "aiaos-cli-skill-string-tools/repeat: missing :times"))
     (when (< times 0)
       (error "aiaos-cli-skill-string-tools/repeat: :times must be >= 0"))
     (setq result "")

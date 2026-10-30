@@ -5,16 +5,20 @@
   "Trim whitespace from a string.
 
 ARGS is a plist with :text.
-OPTIONS is a plist with :side (both|left|right)."
+OPTIONS is a plist with :side (left|right|both, default both).
+R9001: 参数类型转换契约修复，接受 string/number，自动转换。"
   (let* ((opts (if (and (listp options)
                         (= (length options) 1)
                         (listp (car options)))
                    (car options)
                  options))
-         (text (plist-get args :text))
+         (raw (plist-get args :text))
+         (text (cond ((stringp raw) raw)
+                     ((numberp raw) (format "%s" raw))
+                     (t nil)))
          (side (or (plist-get opts :side) "both"))
          result)
-    (unless (stringp text)
+    (unless text
       (error "aiaos-cli-skill-string-tools/trim: missing :text"))
     (cond
      ((string= side "left") (setf result (string-trim-left text)))

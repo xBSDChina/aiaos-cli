@@ -4254,3 +4254,171 @@ M-x aiaos 交互层
 **更新时间**: 2026-10-30  
 **维护者**: AIAOS Project  
 **变更**: R703 M-x aiaos 全交互命令矩阵与使用范式补充
+
+---
+
+## 32. 任务前验证流程范式（R710）
+
+> 本轮核心产出：将「读取指引 → 定位项目 → 四层验证 → 入口检查 → 健康扫描 → 文档整理」固化为可复用的任务执行前置流程。
+
+### 32.1 标准任务执行流程
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 步骤 1: 读取指引文档                                      │
+│   - 定位 ~/aiaos-cli_skills.md（技能开发指引）           │
+│   - 定位 ~/aiaos-cli_design.md（累积式设计文档）          │
+│   - 提取关键约定：目录结构、skill.yaml、返回值约定       │
+├─────────────────────────────────────────────────────────┤
+│ 步骤 2: 定位实际项目                                      │
+│   - ls ~/aiaos/aiaos-cli/                              │
+│   - 确认 bin/ core/ elisp/ skills/ tests/ 结构          │
+│   - 确认 ~/.emacs.d/aiaos-cli/ 前端模块                  │
+├─────────────────────────────────────────────────────────┤
+│ 步骤 3: 四层语法验证（必须全绿）                         │
+│   第 1 层: bash -n (所有 .sh)                            │
+│   第 2 层: emacs --batch forward-sexp (所有 .el)        │
+│   第 3 层: 单套件测试 (tests/test_cli.sh 等)             │
+│   第 4 层: 全量回归 (tests/run-all.sh, 305 tests)       │
+├─────────────────────────────────────────────────────────┤
+│ 步骤 4: 入口检查                                          │
+│   - M-x aiaos 主入口（TUI/菜单模式）                     │
+│   - M-x aiaos-cli-* 系列命令                             │
+│   - aiaos-cli-init / aiaos-cli-menu 自动加载             │
+├─────────────────────────────────────────────────────────┤
+│ 步骤 5: 代码健康度扫描                                    │
+│   - grep TODO/FIXME/BUG/HACK (排除合法 XXX)             │
+│   - 清理遗留备份文件 (.bak.*)                             │
+├─────────────────────────────────────────────────────────┤
+│ 步骤 6: 文档整理                                          │
+│   - 追加本轮任务流程到 design.md                         │
+│   - 更新版本号与变更记录                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 32.2 可复用范式
+
+#### 范式 32.2.1: 四层验证范式
+
+```bash
+# 第 1 层: Shell 语法验证
+for f in $(find . -name "*.sh" -not -path "./.git/*"); do
+  bash -n "$f" || echo "FAIL: $f"
+done
+
+# 第 2 层: Elisp 语法验证（含 skills/）
+for f in $(find elisp skills -name "*.el" -not -path "./.git/*"); do
+  emacs --batch -L elisp -L . -l "$f" \
+    --eval "(progn (goto-char (point-min)) (forward-sexp (point-max)))" \
+    || echo "FAIL: $f"
+done
+
+# 第 3 层: 单套件测试
+bash tests/test_cli.sh
+
+# 第 4 层: 全量回归
+bash tests/run-all.sh
+```
+
+**价值**: 任何任务执行前先跑四层，确保基线全绿，避免在破损基础上工作。
+
+#### 范式 32.2.2: 入口检查范式
+
+```elisp
+;; 检查 M-x aiaos 主入口存在
+(fboundp 'aiaos)
+
+;; 检查 aiaos-cli-init 自动加载
+(assq 'aiaos-cli-init autoload-file-cache)
+
+;; 检查命令注册完整性
+(dolist (cmd '(aiaos-cli-help aiaos-cli-doctor aiaos-cli-command-tree
+               aiaos-cli-skill-list aiaos-cli-session-list
+               aiaos-cli-context-show aiaos-cli-app-start
+               aiaos-cli-agent-chat))
+  (unless (fboundp cmd)
+    (error "Missing: %s" cmd)))
+```
+
+**价值**: 快速确认用户入口完整可用，避免「命令不存在」的低级问题。
+
+### 32.3 验证结果汇总（本轮）
+
+| 验证项 | 结果 | 说明 |
+|--------|------|------|
+| 第 1 层 Shell 语法 | ✅ 通过 | 所有 .sh 通过 bash -n |
+| 第 2 层 Elisp 语法 | ✅ 通过 | elisp/ 和 skills/ 全部 .el 通过 forward-sexp |
+| 第 3 层 单套件 | ✅ 通过 | test_cli.sh 20 项全过 |
+| 第 4 层 全量回归 | ✅ 305/305 通过 | 9 Shell + 1 Elisp 套件，66s |
+| 代码健康度 | ✅ 通过 | 仅 mktemp 合法 XXX，无遗留 TODO/FIXME |
+| M-x aiaos 入口 | ✅ 存在 | aiaos / aiaos-cli-init / aiaos-cli-menu |
+| M-x aiaos-cli-* 命令 | ✅ 完整 | 全部可调用 |
+
+### 32.4 使用建议
+
+1. **任务前必跑**: 四层验证全绿后再开始开发
+2. **快速定位**: `M-x aiaos-cli-command-tree` 浏览全部命令
+3. **健康检查**: `M-x aiaos-cli-doctor` 诊断环境
+4. **技能加载**: `M-x aiaos-cli-skill-load-all` 一键加载全部技能
+
+---
+
+**文档版本**: 2.17.0
+**更新时间**: 2026-10-30
+**维护者**: AIAOS Project
+**变更**: R710 任务前验证流程范式固化（四层验证 + 入口检查 + 健康扫描）
+
+---
+
+## 33. R9001 参数类型转换契约
+
+### 33.1 问题
+多个技能命令对 `:text` 等文本参数使用严格 `(unless (stringp text) ...)` 校验，当调用方传入 JSON number（如 `{"text":123}`）时直接报错，违反"参数宽松转换"契约。
+
+### 33.2 修复范式
+所有接受文本/数值输入的命令，参数解析统一采用**类型转换契约**：
+
+```elisp
+;; 文本参数：接受 string/number，自动转换
+(let* ((raw (plist-get args :text))
+       (text (cond ((stringp raw) raw)
+                   ((numberp raw) (format "%s" raw))
+                   (t nil))))
+  (unless text (error "...: missing :text")))
+
+;; 数值参数：接受 string/number，自动转换
+(let* ((raw-len (plist-get args :length))
+       (len (cond ((stringp raw-len) (string-to-number raw-len))
+                  ((numberp raw-len) raw-len)
+                  (t nil))))
+  (unless (and len (numberp len)) (error "...: invalid :length")))
+```
+
+### 33.3 修复范围
+| 命令 | 文件 | 修复内容 |
+|------|------|----------|
+| hello | hello-world/hello.el | :name 接受 string/number |
+| encode | base64-tools/encode.el | :text 接受 string/number |
+| decode | base64-tools/decode.el | :text 接受 string/number |
+| case | text-tools/case.el | :text 接受 string/number |
+| wordcount | text-tools/wordcount.el | :text 接受 string/number |
+| reverse | string-tools/reverse.el | :text 接受 string/number |
+| trim | string-tools/trim.el | :text 接受 string/number |
+| pad | string-tools/pad.el | :text/:length 接受 string/number |
+| repeat | string-tools/repeat.el | :text/:times 接受 string/number |
+| format | emacs-tools/format.el | :text/:width/:indent 接受 string/number |
+
+### 33.4 验证结果
+- ✅ hello `{"name":123}` → `"Hello, 123!"`
+- ✅ base64 encode `{"text":123}` → `"MTIz"`
+- ✅ base64 decode `{"text":"MTIz"}` → `"123"`
+- ✅ case `{"text":123}` → `"123"`
+- ✅ wordcount `{"text":123}` → `words:1 chars:3`
+- ✅ reverse `{"text":123}` → `"321"`
+- ✅ trim `{"text":123}` → `"123"`
+- ✅ pad `{"text":123,"length":"5"}` → `"123  "`
+- ✅ repeat `{"text":123,"times":3}` → `"123123123"`
+- ✅ format `{"text":123,"width":2}` → `"12\n3"`
+
+**文档版本**: 2.18.0
+**变更**: R9001 参数类型转换契约范式固化（string/number 自动转换，10 命令修复）

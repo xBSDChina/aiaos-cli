@@ -5,16 +5,21 @@
   "Transform text case.
 
 ARGS is a plist with :text.
-OPTIONS is a plist with :mode (upper|lower|title)."
+OPTIONS is a plist with :mode (upper|lower|title).
+R9001: 参数类型转换契约修复，接受 string/number，自动转换。
+注意：默认 mode 为 \"upper\"（与测试契约一致）。"
   (let* ((opts (if (and (listp options)
                         (= (length options) 1)
                         (listp (car options)))
                    (car options)
                  options))
-         (text (plist-get args :text))
+         (raw (plist-get args :text))
+         (text (cond ((stringp raw) raw)
+                     ((numberp raw) (format "%s" raw))
+                     (t nil)))
          (mode (or (plist-get opts :mode) "upper"))
          result)
-    (unless (stringp text)
+    (unless text
       (error "aiaos-cli-skill-text-tools/case: missing :text"))
     (cond
      ((string= mode "upper")
@@ -22,15 +27,13 @@ OPTIONS is a plist with :mode (upper|lower|title)."
      ((string= mode "lower")
       (setf result (downcase text)))
      ((string= mode "title")
-      (let ((words (split-string text "[[:space:]]+" t)))
-        (setf result
-              (mapconcat
-               (lambda (w)
-                 (if (string-empty-p w)
-                     w
-                   (concat (upcase (substring w 0 1))
-                           (downcase (substring w 1)))))
-               words " "))))
+      (setf result
+            (mapconcat (lambda (w)
+                         (if (> (length w) 0)
+                             (concat (upcase (substring w 0 1))
+                                     (downcase (substring w 1)))
+                           w))
+                       (split-string text "[ \t]+" t) " ")))
      (t (error (format "aiaos-cli-skill-text-tools/case: unknown mode %s" mode))))
     (list :status "ok"
           :text result

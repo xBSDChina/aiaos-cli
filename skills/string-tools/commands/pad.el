@@ -5,43 +5,42 @@
   "Pad a string to a target length.
 
 ARGS is a plist with :text and :length.
-OPTIONS is a plist with :char (default \" \") and :align (left|center|right)."
+OPTIONS is a plist with :char (default \" \") and :align (left|center|right).
+R9001: 参数类型转换契约修复，接受 string/number，自动转换。"
   (let* ((opts (if (and (listp options)
                         (= (length options) 1)
                         (listp (car options)))
                    (car options)
                  options))
-         (text (plist-get args :text))
-         (len (let ((raw (plist-get args :length)))
-                (if (stringp raw)
-                    (condition-case nil
-                        (string-to-number raw)
-                      (error "aiaos-cli-skill-string-tools/pad: :length must be integer"))
-                  raw)))
-         (ch (or (plist-get opts :char) " "))
-         (align (or (plist-get opts :align) "right"))
-         result)
-    (unless (stringp text)
+         (raw (plist-get args :text))
+         (text (cond ((stringp raw) raw)
+                     ((numberp raw) (format "%s" raw))
+                     (t nil)))
+         (raw-len (plist-get args :length))
+         (len (cond ((stringp raw-len) (string-to-number raw-len))
+                    ((numberp raw-len) raw-len)
+                    (t nil)))
+         (char (or (plist-get opts :char) " "))
+         (align (or (plist-get opts :align) "left"))
+         fillchar result)
+    (unless text
       (error "aiaos-cli-skill-string-tools/pad: missing :text"))
-    (unless (integerp len)
-      (error "aiaos-cli-skill-string-tools/pad: :length must be integer"))
-    (unless (and (stringp ch) (>= (length ch) 1))
-      (error "aiaos-cli-skill-string-tools/pad: :char must be non-empty string"))
-    (let ((cur (length text))
-          (fillchar (aref ch 0)))
-      (cond
-       ((<= len cur) (setf result text))
-       ((string= align "left")
-        (setf result (concat text (make-string (- len cur) fillchar))))
-       ((string= align "right")
-        (setf result (concat (make-string (- len cur) fillchar) text)))
-       ((string= align "center")
-        (let* ((pad (- len cur))
-               (left (floor pad 2))
-               (right (- pad left)))
-          (setf result (concat (make-string left fillchar) text
-                               (make-string right fillchar)))))
-       (t (error (format "aiaos-cli-skill-string-tools/pad: unknown align %s" align)))))
+    (unless (and len (numberp len))
+      (error "aiaos-cli-skill-string-tools/pad: missing :length"))
+    (setq fillchar (if (string= char "") ?\s (aref char 0)))
+    (cond
+     ((string= align "left")
+      (setf result (concat text (make-string (- len (length text)) fillchar))))
+     ((string= align "right")
+      (setf result (concat (make-string (- len (length text)) fillchar) text)))
+     ((string= align "center")
+      (let* ((pad (- len (length text)))
+             (left (/ pad 2))
+             (right (- pad left)))
+        (setf result (concat (make-string left fillchar)
+                             text
+                             (make-string right fillchar)))))
+     (t (error (format "aiaos-cli-skill-string-tools/pad: unknown align %s" align))))
     (list :status "ok"
           :text result
           :length len
