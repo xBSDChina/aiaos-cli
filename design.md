@@ -4052,3 +4052,79 @@ emacs --batch -L elisp --eval "(require 'aiaos-cli)(aiaos-cli-init t)"
 **更新时间**: 2026-10-30
 **维护者**: AIAOS Project
 **变更**: R5300 文档指引驱动的接手验证范式补充
+
+---
+
+## 三十、R702 领域菜单数据源修复与编译警告消除
+
+**日期**: 2026-10-30  
+**触发背景**: 接手验证时发现工作区有未提交的 R702 领域菜单功能，但 `aiaos-cli-domain-commands` 返回 nil，且编译有 3 个警告。
+
+### 30.1 问题诊断
+
+| 问题 | 根因 | 影响 |
+|------|------|------|
+| `aiaos-cli-domain-commands` 返回 nil | `aiaos-cli--command-tree` 的 key 是 symbol（如 `skill`），但函数接收 string（如 `"skill"`），`equal` 不匹配 | 领域菜单无法枚举命令 |
+| `format` 未使用警告 | `aiaos-cli--collect-args` 用 `when` 链，返回值被丢弃 | 编译警告 |
+| `aiaos-cli--app-available-p` 未定义 | 引用未定义函数 | 编译警告 |
+| `Package cl is deprecated` | 使用 `(require 'cl)` 而非 `cl-lib` | 编译警告 |
+| 未使用参数/变量 | `_buf`、`line` 未使用 | 编译警告 |
+
+### 30.2 修复方案
+
+1. **领域匹配修复**: `aiaos-cli-domain-commands` 将 string 转为 symbol 再比较
+2. **参数收集重构**: `aiaos-cli--collect-args` 从 `when` 链改为 `cond`，确保返回值正确
+3. **新增函数**: `aiaos-cli--app-available-p` 检查 TUI 应用模块是否可用
+4. **cl 迁移**: `(require 'cl)` → `(require 'cl-lib)`
+5. **未使用变量**: 参数加 `_` 前缀，删除未使用局部变量
+
+### 30.3 验证结果
+
+```bash
+# 编译无警告
+emacs --batch -L elisp -f batch-byte-compile elisp/aiaos-cli.el
+
+# 全量测试通过
+bash tests/run-all.sh  # 305/305 通过
+
+# 领域枚举验证
+emacs --batch -L elisp -l aiaos-cli.el --eval "(progn (aiaos-cli-init t) (dolist (d '(session context skill agent provider project config log)) (message \"%s: %d commands\" d (length (aiaos-cli-domain-commands (symbol-name d))))))"
+# session: 7, context: 7, skill: 12, agent: 5, provider: 9, project: 6, config: 7, log: 5
+```
+
+### 30.4 可复用范式
+
+#### 范式 30.4.1: 领域枚举 symbol/string 兼容范式
+
+```
+问题: 静态命令树用 symbol 作为 key，动态调用方用 string
+解决: 接收参数时统一转为 symbol 再比较
+
+(defun aiaos-cli-domain-commands (domain)
+  (let ((domain-sym (if (stringp domain) (intern domain) domain)))
+    (dolist (entry aiaos-cli--command-tree)
+      (when (equal domain-sym (car entry))
+        (setq result (cdr entry))
+        (cl-return)))))
+```
+
+#### 范式 30.4.2: when 链 → cond 重构范式
+
+```
+问题: when 链中每个分支的返回值被丢弃，导致 format 结果未使用
+解决: 改为 cond，每个分支是返回值
+
+(defun aiaos-cli--collect-args (domain action)
+  (cond
+   ((and (equal domain "skill") (equal action "run"))
+    (list (read-string "技能名: ") (read-string "命令名: ")))
+   ;; ...
+   (t nil)))
+```
+
+---
+
+**文档版本**: 2.15.0  
+**更新时间**: 2026-10-30  
+**维护者**: AIAOS Project  
+**变更**: R702 领域菜单数据源修复与编译警告消除
