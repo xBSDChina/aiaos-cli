@@ -39,6 +39,7 @@
 
 ;; TUI 模块集成
 (require 'aiaos-cli-core)
+(require 'cl-lib)
 (require 'aiaos-cli-state)
 (require 'aiaos-cli-context)
 (require 'aiaos-cli-lifecycle)
@@ -590,7 +591,7 @@ R4100+2: 供人工审核查阅全部功能的结构化界面。
 (defvar aiaos-cli--command-tree-collapsed nil
   "已折叠的顶层命令列表（非空表示该顶层命令的子命令不显示）。")
 
-(defun aiaos-cli--render-command-tree (buf)
+(defun aiaos-cli--render-command-tree (_buf)
   "在 BUF 中渲染命令树。"
   (let ((inhibit-read-only t))
     (goto-char (point-min))
@@ -632,8 +633,7 @@ R4100+2: 供人工审核查阅全部功能的结构化界面。
 (defun aiaos-cli-command-tree-expand ()
   "展开/折叠当前顶层命令的子命令。"
   (interactive)
-  (let ((line (thing-at-point 'line))
-        (match (re-search-backward "^## (\\S+)" nil 'boundary)))
+  (let ((match (re-search-backward "^## (\\S+)" nil 'boundary)))
     (when match
       (let ((domain (match-string 1)))
         (if (memq domain aiaos-cli--command-tree-collapsed)
@@ -1421,17 +1421,162 @@ Examples:
 
 
 ;; ============================================================
+;; R702: 通用领域菜单 (M-x aiaos 全功能覆盖)
+;; ============================================================
+
+(defun aiaos-cli-domain-commands (domain)
+  "返回 DOMAIN 下所有命令的 (action . 描述) 列表，按 action 排序。
+
+R702: 通用领域菜单的数据源。基于 aiaos-cli--command-tree 枚举，
+自动覆盖未来新增命令。DOMAIN 可以是 symbol 或 string。"
+  (let ((result nil)
+        (domain-sym (if (stringp domain) (intern domain) domain)))
+    (dolist (entry aiaos-cli--command-tree)
+      (when (equal domain-sym (car entry))
+        (setq result (cdr entry))
+        (cl-return)))
+    (when result
+      (sort result (lambda (a b) (string< (car a) (car b)))))))
+
+(defun aiaos-cli-domain-menu (domain)
+  "交互式菜单：执行 DOMAIN 领域下任意命令。
+
+R702: 全功能覆盖修复。枚举 DOMAIN 下所有命令，显示编号菜单，
+无参命令直接执行，有参命令动态收集参数。"
+  (interactive "s领域 (如 skill, diag, provider): ")
+  (let ((commands (aiaos-cli-domain-commands domain)))
+    (if (null commands)
+        (message "领域 '%s' 无可用命令" domain)
+      (let ((keys (mapcar #'car commands)))
+        (let ((choice
+               (completing-read
+                (format "选择 %s 命令 (共 %d 个): " domain (length commands))
+                keys
+                nil t
+                nil
+                'aiaos-cli-domain-choice-history)))
+          (if (null choice)
+              (message "已取消")
+            (let ((idx (cl-position choice keys :test #'equal)))
+              (if idx
+                  (let ((action (nth idx keys)))
+                    (let ((args (aiaos-cli--collect-args domain action)))
+                      (aiaos-cli-run domain action args)))
+                  (message "无效选择: %S" choice)))))))))
+
+(defvar aiaos-cli-domain-choice-history nil
+  "领域菜单选择历史。")
+
+(defun aiaos-cli--collect-args (domain action)
+  "收集 DOMAIN ACTION 的参数，返回字符串列表。
+
+R702: 简化版参数收集。对于 skill 领域，检查常见参数模式。"
+  (cond
+   ;; skill/run 需要 skill 名和命令名
+   ((and (equal domain "skill") (equal action "run"))
+    (list (read-string "技能名: ")
+          (read-string "命令名: ")))
+   ;; skill/install 需要源
+   ((and (equal domain "skill") (equal action "install"))
+    (list (read-string "源 (路径或URL): ")))
+   ;; skill/update 需要名称
+   ((and (equal domain "skill") (equal action "update"))
+    (list (format "--name=%s" (read-string "技能名: "))))
+   ;; skill/uninstall 需要名称
+   ((and (equal domain "skill") (equal action "uninstall"))
+    (list (format "--name=%s" (read-string "技能名: "))))
+   ;; skill/enable/disable 需要名称
+   ((and (equal domain "skill")
+         (or (equal action "enable") (equal action "disable")))
+    (list (format "--name=%s" (read-string "技能名: "))))
+   ;; session/delete 需要名称
+   ((and (equal domain "session") (equal action "delete"))
+    (list (format "--name=%s" (read-string "会话名: "))))
+   ;; session/archive 需要名称
+   ((and (equal domain "session") (equal action "archive"))
+    (list (format "--name=%s" (read-string "会话名: "))))
+   ;; session/switch 需要名称
+   ((and (equal domain "session") (equal action "switch"))
+    (list (format "--name=%s" (read-string "会话名: "))))
+   ;; session/show 需要名称
+   ((and (equal domain "session") (equal action "show"))
+    (list (format "--name=%s" (read-string "会话名: "))))
+   ;; config/get 需要键
+   ((and (equal domain "config") (equal action "get"))
+    (list (read-string "配置键: ")))
+   ;; config/set 需要键和值
+   ((and (equal domain "config") (equal action "set"))
+    (list (read-string "配置键: ") (read-string "配置值: ")))
+   ;; 默认：无参数
+   (t nil)))
+
+(defun aiaos-cli-menu-read (&optional domain)
+  "显示 AIAOS-CLI 全功能主菜单。
+
+R702: 全功能覆盖修复。枚举所有 12 个领域，动态生成编号菜单。
+支持两种模式：
+  - 交互模式（默认）：显示菜单，用户选择领域
+  - 编程模式：传入 DOMAIN 直接进入领域菜单
+
+领域列表（12个）：
+  session, context, skill, agent, project, config,
+  log, provider, system_info, text-tools, diag, builtin"
+  (interactive)
+  (let ((domains '("skill" "session" "context" "agent"
+                   "project" "config" "log" "provider"
+                   "system_info" "text-tools" "diag" "builtin")))
+    (if domain
+        ;; 编程模式：直接进入指定领域
+        (aiaos-cli-domain-menu domain)
+      ;; 交互模式：显示主菜单
+      (let ((keys (mapcar #'car domains)))
+        (let ((choice
+               (completing-read
+                "选择领域 (共 12 个): "
+                keys
+                nil t
+                nil
+                'aiaos-cli-domain-history)))
+          (if (null choice)
+              (message "已取消")
+            (let ((idx (cl-position choice keys :test #'equal)))
+              (if idx
+                  (aiaos-cli-domain-menu (nth idx domains))
+                (message "无效选择: %S" choice)))))))))
+
+(defvar aiaos-cli-domain-history nil
+  "领域选择历史。")
+
+;; ============================================================
 ;; M-x aiaos 主入口
 ;; ============================================================
 
+(defun aiaos-cli--app-available-p ()
+  "检查 TUI 应用模块是否可用。
+
+R702: 用于决定 aiaos 入口走 TUI 还是菜单模式。"
+  (and (fboundp 'aiaos-cli--app-run)
+       (fboundp 'aiaos-cli--app-init)))
+
 ;;;###autoload
 (defun aiaos (&optional arg)
-  "Launch AIAOS-CLI TUI application.
+  "Launch AIAOS-CLI application.
 
-With optional ARG (non-nil), run in interactive setup mode."
+With optional ARG (non-nil), run in interactive setup mode.
+
+R702: 新增菜单模式选择。默认 TUI，可选全功能菜单。"
   (interactive "P")
   (aiaos-cli-init t)
-  (aiaos-cli--app-run))
+  (if (or arg (not (aiaos-cli--app-available-p)))
+      (aiaos-cli-menu-read)
+    (aiaos-cli--app-run)))
+
+;;;###autoload
+(defun aiaos-cli-menu ()
+  "Launch AIAOS-CLI full-feature menu (R702)."
+  (interactive)
+  (aiaos-cli-init t)
+  (aiaos-cli-menu-read))
 
 ;; 兼容别名：M-x aiaos-cli 也指向同一入口
 (defalias 'aiaos-cli 'aiaos)
