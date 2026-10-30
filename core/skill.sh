@@ -39,7 +39,7 @@ show_help() {
   disable     禁用技能
   validate    验证技能元数据
   run         运行技能命令 (--name --command [--args JSON] [--options JSON])
-  deps        依赖解析/拓扑排序/循环检测 (--name [NAME])
+  deps        依赖解析/拓扑排序/循环检测 (--name [NAME]) [--graph dot]
 
 选项:
   --name NAME         技能名称
@@ -863,7 +863,7 @@ if kept:
 # 范式来源: design doc §5.4 P2 "技能依赖图：拓扑排序加载、循环依赖检测"
 # ---------------------------------------------------------------------------
 skill_deps() {
-    local name=""
+    local name="" graph=""
     parse_common_opts "$@"
     local fmt="$AIAOS_PARSE_FMT"
     set -- "${AIAOS_PARSE_REMAINING[@]}"
@@ -871,13 +871,15 @@ skill_deps() {
         case "$1" in
             --name) name="$2"; shift 2 ;;
             --name=*) name="${1#*=}"; shift ;;
+            --graph) graph="$2"; shift 2 ;;
+            --graph=*) graph="${1#*=}"; shift ;;
             -h|--help) show_help; exit 0 ;;
             *) log_error "未知选项: $1"; show_help; exit 1 ;;
         esac
     done
 
     local IFS=':'
-    AIAOS_DEPS_NAME="$name" AIAOS_DEPS_FMT="$fmt" AIAOS_DEPS_DIRS="${SKILL_DIRS[*]}" python3 <<'PYDEPS'
+    AIAOS_DEPS_NAME="$name" AIAOS_DEPS_FMT="$fmt" AIAOS_DEPS_GRAPH="$graph" AIAOS_DEPS_DIRS="${SKILL_DIRS[*]}" python3 <<'PYDEPS'
 import os, sys, json, yaml
 
 def skill_dirs():
@@ -948,6 +950,7 @@ def topo_sort(metas, root):
 
 name = os.environ.get('AIAOS_DEPS_NAME', '')
 fmt = os.environ.get('AIAOS_DEPS_FMT', 'table')
+graph_fmt = os.environ.get('AIAOS_DEPS_GRAPH', '')
 metas = find_all()
 
 if name and name not in metas:
@@ -967,6 +970,35 @@ for t in targets:
         'cycles': cycles,
         'missing': [d for d in deps_of(metas[t]) if d not in metas] if t in metas else [],
     })
+
+# R2104: DOT 格式输出支持
+if graph_fmt == 'dot':
+    print('digraph skill_deps {')
+    print('    rankdir=LR;')
+    print('    node [shape=box, style=filled, fillcolor="#E3F2FD"];')
+    all_nodes = set()
+    all_edges = set()
+    for r in results:
+        skill = r['skill']
+        all_nodes.add(skill)
+        for dep in r['direct_deps']:
+            all_nodes.add(dep)
+            all_edges.add((dep, skill))
+    for n in sorted(all_nodes):
+        label = n
+        if n in metas:
+            desc = metas[n].get('description', '')
+            if desc:
+                label = f'{n}\\n{desc[:40]}'
+        print(f'    {n!r} [label="{label}"]'.replace("'", '"'))
+    for src, dst in sorted(all_edges):
+        print(f'    {src} -> {dst}')
+    for r in results:
+        for c in r['cycles']:
+            for i in range(len(c) - 1):
+                print(f'    {c[i]} -> {c[i+1]} [color=red, style=dashed];')
+    print('}')
+    sys.exit(0 if not has_cycle else 1)
 
 ok = not has_cycle and not any(r['missing'] for r in results)
 if fmt == 'json':

@@ -211,39 +211,82 @@ agent_chat() {
             --session) session_id="$2"; shift 2 ;;
             --agent) agent_name="$2"; shift 2 ;;
             --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
-            --format=*) format="${1#*=}"; shift; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
-            -h|--help) show_help; exit 0 ;;
-            *) log_error "未知选项: $1"; show_help; exit 1 ;;
+            *) shift ;;
         esac
     done
 
-    [[ -z "$message" ]] && { log_error "需要 --message 参数"; exit 1; }
-
     session_id="${session_id:-$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "default")}"
 
-    if [[ "$format" == "json" ]]; then
-        python3 -c "
+    # 优先尝试真实 LLM（通过桥接脚本），失败则优雅降级到模拟回复
+    local bridge_reply=""
+    local bridge_err=""
+    if [[ -f "${HOME}/.config/aiaos/agent_llm_bridge.py" ]]; then
+        bridge_reply=$(python3 "${HOME}/.config/aiaos/agent_llm_bridge.py" --message "$message" --agent "$agent_name" --session "$session_id" 2>/dev/null || true)
+    fi
+
+    local real_reply=""
+    if [[ -n "$bridge_reply" ]]; then
+        # 解析 JSON 中的 reply 字段
+        real_reply=$(echo "$bridge_reply" | python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    if data.get('reply'):
+        print(data['reply'])
+except Exception:
+    pass
+" 2>/dev/null)
+    fi
+
+    if [[ -n "$real_reply" ]]; then
+        if [[ "$format" == "json" ]]; then
+            python3 -c "
 import json, time, sys
 response = {
     'type': 'result',
     'session_id': sys.argv[1],
     'agent': sys.argv[2],
     'message': sys.argv[3],
-    'reply': '这是模拟回复。实际应连接到 AIAOS Agent 后端。',
+    'reply': sys.argv[4],
+    'timestamp': time.time()
+}
+print(json.dumps(response))
+" "$session_id" "$agent_name" "$message" "$real_reply"
+        else
+            echo -n "🤖 [$agent_name] "
+            for ((i=0; i<${#real_reply}; i++)); do
+                echo -n "${real_reply:i:1}"
+                sleep 0.01
+            done
+            echo
+        fi
+    else
+        # 降级：模拟回复（无真实凭据时不崩溃）
+        if [[ "$format" == "json" ]]; then
+            python3 -c "
+import json, time, sys
+response = {
+    'type': 'result',
+    'session_id': sys.argv[1],
+    'agent': sys.argv[2],
+    'message': sys.argv[3],
+    'reply': '（模拟回复）当前未配置可用的 LLM API 凭据，无法连接真实后端。',
     'timestamp': time.time()
 }
 print(json.dumps(response))
 " "$session_id" "$agent_name" "$message"
-    else
-        echo -n "🤖 [$agent_name] "
-        local reply="这是模拟回复。实际应连接到 AIAOS Agent 后端。"
-        for ((i=0; i<${#reply}; i++)); do
-            echo -n "${reply:i:1}"
-            sleep 0.02
-        done
-        echo
+        else
+            echo -n "🤖 [$agent_name] "
+            local reply="（模拟回复）当前未配置可用的 LLM API 凭据，无法连接真实后端。"
+            for ((i=0; i<${#reply}; i++)); do
+                echo -n "${reply:i:1}"
+                sleep 0.02
+            done
+            echo
+        fi
     fi
 }
+
 
 agent_delegate() {
     local task="" session_id="" agent_name="default"

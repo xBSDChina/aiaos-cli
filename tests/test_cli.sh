@@ -237,7 +237,36 @@ if [ "${R14d:-0}" -ge 1 ]; then
     echo "PASS: skill help 包含 deps（文档-实现一致）"
 else
     echo "FAIL: skill help 缺少 deps"
+
+
 fi
+
+# --- R2104: skill deps --graph dot DOT 格式输出 ---
+echo "--- 测试 14e: skill deps --graph dot (R2104) ---"
+R14e=$($CLI_BIN skill deps --graph dot 2>/dev/null)
+if echo "$R14e" | grep -q "^digraph skill_deps {" && echo "$R14e" | grep -q "rankdir=LR" && echo "$R14e" | grep -q "hello-world"; then
+    echo "PASS: skill deps --graph dot 输出合法 DOT 图"
+else
+    echo "FAIL: skill deps --graph dot 输出异常: $R14e"
+fi
+# 带 --name 过滤
+R14f=$($CLI_BIN skill deps --name hello-world --graph dot 2>/dev/null)
+if echo "$R14f" | grep -q "^digraph skill_deps {" && echo "$R14f" | grep -q "hello-world" && ! echo "$R14f" | grep -q "file-tools"; then
+    echo "PASS: skill deps --name hello-world --graph dot 过滤正确"
+else
+    echo "FAIL: skill deps --name --graph dot 过滤异常: $R14f"
+fi
+# DOT 语法校验（若安装了 dot 命令）
+if command -v dot >/dev/null 2>&1; then
+    if echo "$R14e" | dot -Tsvg >/dev/null 2>&1; then
+        echo "PASS: DOT 图通过 graphviz 语法校验"
+    else
+        echo "FAIL: DOT 图 graphviz 语法校验失败"
+    fi
+else
+    echo "SKIP: graphviz 未安装，跳过语法校验"
+fi
+
 
 
 

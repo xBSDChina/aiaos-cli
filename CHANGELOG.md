@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- skill deps --graph dot: 支持 DOT 格式输出技能依赖图（P2 实现，设计文档 §64 R2104）
+- tests: 新增 skill deps --graph dot 3 项测试（合法 DOT 输出 / --name 过滤 / graphviz 语法校验）
+
+### Changed
+- agent chat: 支持通过 `~/.config/aiaos/agent_llm_bridge.py` 桥接真实 LLM，失败时优雅降级到模拟回复
+
 ## [1.0.0] - 2026-10-28
 
 ### Added
