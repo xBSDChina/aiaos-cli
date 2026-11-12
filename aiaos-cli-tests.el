@@ -1,0 +1,179 @@
+;;; aiaos-cli-tests.el --- AIAOS-CLI test suite -*- lexical-binding: t; -*-
+
+(require 'ert)
+(require 'aiaos-cli)
+
+;; R2210: hermetic 路径派生 —— 从本文件位置推导项目根，
+;; 消除对 /home/shjiaye8 硬编码的依赖，便于在任意 checkout 目录跑测试。
+(defvar aiaos-cli-tests--root
+  (directory-file-name
+   (file-name-directory
+    (directory-file-name
+     (file-name-directory load-file-name))))
+  "Project root, derived from this test file's location.")
+
+(defvar aiaos-cli-tests--bin
+  (expand-file-name "bin/aiaos-cli" aiaos-cli-tests--root)
+  "Path to the aiaos-cli binary.")
+
+;; ---------------------------------------------------------------------------
+;; aiaos-cli-tests.el — test suite for aiaos-cli.el
+;;
+;; Run with:  emacs -batch -L elisp -l elisp/aiaos-cli.el -l elisp/aiaos-cli-tests.el \
+;;              --eval '(ert-run-tests-batch)'
+;; ---------------------------------------------------------------------------
+
+;; ---------------------------------------------------------------------------
+;; R780 regression tests: lock down the parse-json and assert-binary fixes
+;; ---------------------------------------------------------------------------
+
+(ert-deftest aiaos-cli-test/parse-json-valid ()
+  "R780: parse-json should return a hash-table on valid JSON."
+  (let ((r (aiaos-cli--parse-json "{\"a\":1,\"b\":\"x\"}")))
+    (should (hash-table-p r))
+    (should (equal (gethash "a" r) 1))
+    (should (equal (gethash "b" r) "x"))))
+
+(ert-deftest aiaos-cli-test/parse-json-invalid-returns-nil ()
+  "R780: parse-json should return nil (not raise) on malformed JSON."
+  (should (null (aiaos-cli--parse-json "not json")))
+  (should (null (aiaos-cli--parse-json "{broken")))
+  (should (null (aiaos-cli--parse-json ""))))
+
+(ert-deftest aiaos-cli-test/parse-json-non-string-errors ()
+  "R780: parse-json should raise user-error on non-string input."
+  (let ((caught nil))
+    (condition-case nil
+        (aiaos-cli--parse-json nil)
+      (error (setq caught t)))
+    (should caught)))
+
+(ert-deftest aiaos-cli-test/parse-json-emacs29-compat ()
+  "R780: parse-json must not depend on any Emacs 30+ only JSON reader.
+Guards against a future regression that reintroduces the void-function
+crash on Emacs 29."
+  (let ((src (with-temp-buffer
+               (insert-file-contents
+                (locate-file "aiaos-cli.el" load-path))
+               (buffer-string))))
+    (should (not (string-match-p "json-read-from-string" src)))))
+
+(ert-deftest aiaos-cli-test/assert-binary-error-message ()
+  "R780: assert-binary error message must list all three lookup paths
+so the user can act immediately."
+  (let ((saved aiaos-cli-bin)
+        (saved-path (getenv "PATH"))
+        (saved-exec-path exec-path)
+        (msg))
+    (unwind-protect
+        (progn
+          (setq aiaos-cli-bin "/tmp/definitely-not-a-real-aiaos-cli-binary")
+          (setenv "PATH" "/usr/bin:/bin")
+          (setq exec-path (list "/usr/bin" "/bin"))
+          (let ((fake-home (make-temp-file "aiaos-test-home" t)))
+            (setenv "HOME" (file-name-directory fake-home)))
+          (condition-case e
+              (aiaos-cli--assert-binary)
+            (error (setq msg (error-message-string e)))))
+          (setq exec-path saved-exec-path)
+          (setenv "PATH" saved-path)
+      (setq aiaos-cli-bin saved))
+    (should (stringp msg))
+    (should (string-match-p "aiaos-cli-bin=" msg))
+    (should (string-match-p "PATH=" msg))
+    (should (string-match-p "~/aiaos/aiaos-cli/bin/aiaos-cli" msg))
+    (should (string-match-p "Fix by setq aiaos-cli-bin" msg))
+    (should (string-match-p "/tmp/definitely-not-a-real-aiaos-cli-binary" msg))))
+
+(ert-deftest aiaos-cli-test/assert-binary-success ()
+  "R780: assert-binary should return the binary path when it exists."
+  (let ((saved aiaos-cli-bin)
+        (target aiaos-cli-tests--bin)
+        bin)
+    (unwind-protect
+        (progn
+          (setq aiaos-cli-bin target)
+          (setq bin (aiaos-cli--assert-binary)))
+      (setq aiaos-cli-bin saved))
+    (should (string= bin target))
+    (should (file-executable-p bin))))
+
+;; ---------------------------------------------------------------------------
+;; Existing tests (preserved)
+;; ---------------------------------------------------------------------------
+
+(ert-deftest aiaos-cli-test/parse-json-array ()
+  "Parse a JSON array (returns a vector, per JSON spec)."
+  (let ((r (aiaos-cli--parse-json "[1,2,3]")))
+    (should (vectorp r))
+    (should (equal (length r) 3))
+    (should (equal (aref r 0) 1))
+    (should (equal (aref r 2) 3))))
+
+(ert-deftest aiaos-cli-test/parse-json-nested ()
+  "Parse nested JSON."
+  (let ((r (aiaos-cli--parse-json "{\"a\":{\"b\":42}}")))
+    (should (hash-table-p r))
+    (should (hash-table-p (gethash "a" r)))
+    (should (equal (gethash "b" (gethash "a" r)) 42))))
+
+(ert-deftest aiaos-cli-test/parse-json-string ()
+  "Parse a JSON string."
+  (should (equal (aiaos-cli--parse-json "\"hello\"") "hello")))
+
+(ert-deftest aiaos-cli-test/parse-json-number ()
+  "Parse a JSON number."
+  (should (equal (aiaos-cli--parse-json "42") 42)))
+
+(ert-deftest aiaos-cli-test/parse-json-boolean ()
+  "Parse JSON booleans (json-read returns t for true, :json-false for false)."
+  (should (equal (aiaos-cli--parse-json "true") t))
+  (should (equal (aiaos-cli--parse-json "false") :json-false)))
+
+(ert-deftest aiaos-cli-test/parse-json-null ()
+  "Parse JSON null."
+  (should (null (aiaos-cli--parse-json "null"))))
+
+(ert-deftest aiaos-cli-test/parse-json-empty-object ()
+  "Parse an empty JSON object."
+  (let ((r (aiaos-cli--parse-json "{}")))
+    (should (hash-table-p r))
+    (should (equal (hash-table-count r) 0))))
+
+(ert-deftest aiaos-cli-test/parse-json-empty-array ()
+  "Parse an empty JSON array (returns an empty vector)."
+  (let ((r (aiaos-cli--parse-json "[]")))
+    (should (vectorp r))
+    (should (equal (length r) 0))))
+
+(ert-deftest aiaos-cli-test/parse-json-unicode ()
+  "Parse JSON with unicode escapes."
+  (should (equal (aiaos-cli--parse-json "\"\\u4f60\\u597d\"") "你好")))
+
+(ert-deftest aiaos-cli-test/parse-json-escape-sequences ()
+  "Parse JSON escape sequences."
+  (should (equal (aiaos-cli--parse-json "\"a\\nb\"") "a\nb"))
+  (should (equal (aiaos-cli--parse-json "\"a\\\"b\"") "a\"b")))
+
+(ert-deftest aiaos-cli-test/parse-json-precision ()
+  "Parse JSON with floating point precision."
+  (let ((r (aiaos-cli--parse-json "{\"pi\":3.14159}")))
+    (should (hash-table-p r))
+    (should (floatp (gethash "pi" r)))
+    (should (> (gethash "pi" r) 3.14))
+    (should (< (gethash "pi" r) 3.15))))
+
+(ert-deftest aiaos-cli-test/parse-json-large ()
+  "Parse a larger JSON structure."
+  (let ((r (aiaos-cli--parse-json
+            "{\"items\":[{\"id\":1,\"name\":\"a\"},{\"id\":2,\"name\":\"b\"},{\"id\":3,\"name\":\"c\"}]}")))
+    (should (hash-table-p r))
+    (let ((items (gethash "items" r)))
+      (should (vectorp items))
+      (should (equal (length items) 3))
+      (should (equal (gethash "id" (aref items 0)) 1))
+      (should (equal (gethash "name" (aref items 1)) "b"))
+      (should (equal (gethash "id" (aref items 2)) 3)))))
+(provide 'aiaos-cli-tests)
+
+;;; aiaos-cli-tests.el ends here
