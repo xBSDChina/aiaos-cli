@@ -1,0 +1,104 @@
+# Emacs backup files
+*~
+#\#
+.*#
+.*.swp
+.*.swo
+
+# Emacs auto-save files
+#*
+
+# Byte-compiled files
+*.elc
+
+# Org-mode backup files
+.orgx
+
+# Calendar files
+calendar
+
+# ERC logs
+erc/
+
+# Trust files
+.trust/
+
+# Dashboard files
+dashboard/
+
+# Projectile files
+.projectile
+
+# Projectile cache
+.projectile-cache/
+
+# Projectile ignored directories
+.projectile-ignored-directories/
+
+# Eshell history
+/eshell/history
+
+# Eshell directories
+/eshell/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+$RECYCLE.BIN/
+
+# Logs
+*.log
+*.log.*.gz
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Backup directories
+backups/
+backups_*/
+
+# Backup files
+*.bak
+*.bak.*
+
+# Custom backup locations
+lsp-mode/
+semgrep/
+semgrep-core/

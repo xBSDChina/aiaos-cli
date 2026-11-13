@@ -55,6 +55,18 @@ CONTEXT: 组件上下文"
   (effects nil)
   (context nil))
 
+;; Emacs 30 的 eager macro-expansion 在加载 aiaos-cli-app.el 时无法识别
+;; cl-defstruct 自动注册的 (setf aiaos-cli--component-render) 展开器，
+;; 导致 "wrong-number-of-arguments setf 3"。显式注册一个 setter 兜底。
+;; render 槽位于结构体索引 5（index 0 是类型标签，其后依次为
+;; name/props/state/children/render/effects/context）。
+(defun aiaos-cli--component-set-render (component value)
+  "Set COMPONENT's RENDER slot to VALUE."
+  (aset component 5 value))
+
+(gv-define-setter aiaos-cli--component-render (value component)
+  `(aiaos-cli--component-set-render ,component ,value))
+
 ;; 当前组件栈
 (defvar aiaos-cli--component-stack nil
   "组件栈，用于管理嵌套组件")
@@ -149,8 +161,9 @@ BUFFER 是目标 buffer（可选，默认当前 buffer）
   (let ((result nil))
     (let* ((target-buffer (or buffer (current-buffer)))
            (old-buffer (current-buffer)))
-      (with-current-buffer target-buffer
-        (let ((inhibit-modification-hooks t))
+       (with-current-buffer target-buffer
+         (let ((inhibit-modification-hooks t)
+               (inhibit-read-only t))
           ;; 执行渲染函数
           (when (aiaos-cli--component-render component)
             (funcall (aiaos-cli--component-render component) target-buffer))

@@ -306,11 +306,12 @@ ROUTE 是路由对象"
 PATH 是目标路径，BODY 是链接内容。
 示例: (aiaos-cli--router-link \"/skills\" \"技能管理\")"
   `(propertize ,@body
-     'mouse-face
+     'face 'link
+     'mouse-face 'highlight
+     'mouse-action
      (lambda (event)
        (when (mouse-event-button-press-event-p event)
-         (aiaos-cli--router-navigate ,path)))
-     'face 'link))
+         (aiaos-cli--router-navigate ,path)))))
 
 
 ;; 路由参数提取

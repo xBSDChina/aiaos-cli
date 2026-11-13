@@ -145,8 +145,8 @@ PLACEHOLDER 是占位符文本
             ))
     ;; 添加状态到组件
     (setf (aiaos-cli--component-state component) value-state)
-    ;; 返回组件和状态
-    (list component value-state)))
+    ;; 返回组件
+    component))
 
 ;; ============================================================
 ;; 模态框组件
@@ -192,9 +192,10 @@ HEADERS 是表头列表
 ROWS 是行列表，每行是单元格列表
 
 示例:
-  (aiaos-cli-component-table `(\"Name\" \"Value\")
-    '((\"Key1\" \"Value1\")
-      (\"Key2\" \"Value2\")))"
+  (aiaos-cli-component-table
+    (list \"Name\" \"Value\")
+    (list (list \"Key1\" \"Value1\")
+          (list \"Key2\" \"Value2\")))"
   (let ((component (make-aiaos-cli--component :name 'table)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
@@ -204,7 +205,7 @@ ROWS 是行列表，每行是单元格列表
               (insert header "\t"))
             (insert ?\n)
             ;; 渲染分隔线
-            (dotimes (i (length headers))
+            (dotimes (_i (length headers))
               (insert "-----\t"))
             (insert ?\n)
             ;; 渲染行
@@ -243,10 +244,10 @@ LABEL 是标签（可选）
               (when label (insert label ": "))
               ;; 渲染进度条
               (insert "[")
-              (dotimes (i filled)
-                (insert-char ?█))
-              (dotimes (i empty)
-                (insert-char ?░))
+               (dotimes (_i filled)
+                 (insert-char ?█))
+               (dotimes (_i empty)
+                 (insert-char ?░))
               (insert "]")
               ;; 渲染百分比
               (insert (format " %d%%\n" pct)))))
@@ -271,7 +272,7 @@ RIGHT 是右侧文本
           (lambda (buffer)
             (with-current-buffer buffer
               (insert left)
-              (dotimes (i (max 0 (- 80 (+ (length left) (length right)))))
+               (dotimes (_i (max 0 (- 80 (+ (length left) (length right)))))
                 (insert " "))
               (insert right))))
     component))
@@ -331,7 +332,7 @@ COMPONENTS 是子组件列表
 
 LEFT 是左侧组件
 RIGHT 是右侧组件
-DIRECTION 是分割方向（'horizontal 或 'vertical，默认 'horizontal）
+DIRECTION 是分割方向（\='horizontal 或 \='vertical，默认 \='horizontal）
 
 示例:
   (aiaos-cli-component-split
@@ -408,8 +409,7 @@ SHORTCUTS 是快捷键列表，每个快捷键是 (描述 . 按键) 对
   (aiaos-cli-component-shortcuts
     (\"Help\" . \"C-c a h\")
     (\"Version\" . \"C-c a v\"))"
-  (let ((component (make-aiaos-cli--component :name 'shortcuts))
-        (theme (aiaos-cli--theme-current)))
+  (let ((component (make-aiaos-cli--component :name 'shortcuts)))
     ;; 设置渲染函数
     (setf (aiaos-cli--component-render component)
           (lambda (_buffer)
@@ -451,25 +451,26 @@ WINDOW-SIZE 是可视窗口大小（可选，默认20）
                    (end (min total (+ start ws))))
               ;; 渲染标题
               (insert (format "Virtual List [%d items, showing %d-%d]\n"
-                               total start end))
+                              total start end))
               (insert (make-string 40 ?─) "\n")
               ;; 渲染可视范围内的项
-              (dotimes (i (- end start))
-                (let* ((idx (+ start i))
-                       (item (nth idx items))
-                       (is-selected (= idx (aiaos-cli--state-get selected-state)))))
-                  (if is-selected
-                      (insert (aiaos-cli--theme-icon theme :pointer) " ")
-                    (insert "  "))
-                  (insert (format "%d: %S" idx item) "\n")))
+              (let ((i 0))
+                (while (< i (- end start))
+                  (let* ((idx (+ start i))
+                         (item (nth idx items))
+                         (is-selected (= idx (aiaos-cli--state-get selected-state))))
+                    (if is-selected
+                        (insert (aiaos-cli--theme-icon theme :pointer) " ")
+                      (insert "  "))
+                    (insert (format "%d: %S" idx item) "\n"))
+                  (setq i (1+ i))))
               ;; 渲染滚动提示
               (when (> total ws)
                 (insert "\n" (make-string 40 ?─) "\n")
-                (insert "[↑↓ scroll | ↑↓ selected | q quit]")
-              ))))
+                (insert "[↑↓ scroll | ↑↓ selected | q quit]")))))
     ;; 添加状态到组件
     (setf (aiaos-cli--component-state component) (list selected-state scroll-state))
-    component)
+    component))
 
 ;; 初始化组件库
 (defun aiaos-cli-components-init ()
