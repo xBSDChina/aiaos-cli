@@ -1,0 +1,200 @@
+;;; aiaos-cli-llm.el --- LLM Provider Management -*- lexical-binding: t; -*-
+
+;; This module provides comprehensive LLM provider management for AIAOS CLI.
+
+(provide 'aiaos-cli-llm)
+(require 'aiaos-cli)
+
+(defgroup aiaos-cli-llm nil
+  "AIAOS CLI LLM Provider Support"
+  :group 'aiaos-cli
+  :prefix "aiaos-cli-llm-")
+
+(defcustom aiaos-cli-openai-api-key nil
+  "OpenAI API key."
+  :type 'string
+  :group 'aiaos-cli-llm)
+
+(defcustom aiaos-cli-anthropic-api-key nil
+  "Anthropic API key."
+  :type 'string
+  :group 'aiaos-cli-llm)
+
+(defcustom aiaos-cli-google-api-key nil
+  "Google API key."
+  :type 'string
+  :group 'aiaos-cli-llm)
+
+(defcustom aiaos-cli-ollama-api-url "http://localhost:11434"
+  "Ollama API URL."
+  :type 'string
+  :group 'aiaos-cli-llm)
+
+
+
+(defvar aiaos-cli--models nil
+  "Available models for each provider.")
+
+
+;;; Provider Initialization
+
+(defun aiaos-cli--init-openai-provider ()
+  "Initialize OpenAI provider."
+  (setq aiaos-cli--providers
+        (append aiaos-cli--providers
+                (list (cons 'openai
+                            (list :name "OpenAI"
+                                  :api-key aiaos-cli-openai-api-key
+                                  :base-url "https://api.openai.com/v1"
+                                  :models '("gpt-4" "gpt-3.5-turbo" "gpt-4-turbo")))))))
+
+(defun aiaos-cli--init-anthropic-provider ()
+  "Initialize Anthropic provider."
+  (setq aiaos-cli--providers
+        (append aiaos-cli--providers
+                (list (cons 'anthropic
+                            (list :name "Anthropic"
+                                  :api-key aiaos-cli-anthropic-api-key
+                                  :base-url "https://api.anthropic.com/v1"
+                                  :models '("claude-3-opus" "claude-3-sonnet" "claude-2")))))))
+
+(defun aiaos-cli--init-google-provider ()
+  "Initialize Google provider."
+  (setq aiaos-cli--providers
+        (append aiaos-cli--providers
+                (list (cons 'google
+                            (list :name "Google"
+                                  :api-key aiaos-cli-google-api-key
+                                  :base-url "https://generativelanguage.googleapis.com/v1"
+                                  :models '("gemini-pro" "gemini-1.5-pro" "gemini-1.5-flash")))))))
+
+(defun aiaos-cli--init-ollama-provider ()
+  "Initialize Ollama provider."
+  (setq aiaos-cli--providers
+        (append aiaos-cli--providers
+                (list (cons 'ollama
+                            (list :name "Ollama"
+                                  :api-key nil
+                                  :base-url aiaos-cli-ollama-api-url
+                                  :models '("llama2" "mistral" "gemma" "codellama")))))))
+
+
+;;; LLM API Calls
+
+(defun aiaos-cli--call-llm (query)
+  "Send a query to the current LLM provider."
+  (unless aiaos-cli--current-provider
+    (error "No provider initialized"))
+  
+  (let ((provider-info (cdr (assoc aiaos-cli--current-provider aiaos-cli--providers))))
+    (pcase aiaos-cli--current-provider
+      ("openai" (aiaos-cli--call-openai query provider-info))
+      ("anthropic" (aiaos-cli--call-anthropic query provider-info))
+      ("google" (aiaos-cli--call-google query provider-info))
+      ("ollama" (aiaos-cli--call-ollama query provider-info))
+      (_ (error "Unknown provider: %s" aiaos-cli--current-provider)))))
+
+(defun aiaos-cli--call-openai (query provider-info)
+  "Call OpenAI API."
+  (let* ((api-key (plist-get provider-info :api-key))
+         (base-url (plist-get provider-info :base-url))
+         (model (or aiaos-cli--model "gpt-3.5-turbo"))
+         (url (format "%s/chat/completions" base-url))
+         (headers `(("Content-Type" . "application/json")
+                    ("Authorization" . ,(format "Bearer %s" api-key))))
+         (data `(("model" . ,model)
+                 ("messages" . ((list :role "user" :content ,query)))
+                 ("temperature" . ,aiaos-cli--temperature)
+                 ("max_tokens" . ,aiaos-cli--max-tokens))))
+    (aiaos-cli--make-api-request url headers data)))
+
+(defun aiaos-cli--call-anthropic (query provider-info)
+  "Call Anthropic API."
+  (let* ((api-key (plist-get provider-info :api-key))
+         (base-url (plist-get provider-info :base-url))
+         (model (or aiaos-cli--model "claude-3-haiku"))
+         (url (format "%s/messages" base-url))
+         (headers `(("Content-Type" . "application/json")
+                    ("x-api-key" . ,api-key)
+                    ("anthropic-version" . "2023-06-01")))
+         (data `(("model" . ,model)
+                 ("messages" . ((list :role "user" :content ,query)))
+                 ("max_tokens" . ,aiaos-cli--max-tokens)
+                 ("temperature" . ,aiaos-cli--temperature))))
+    (aiaos-cli--make-api-request url headers data)))
+
+(defun aiaos-cli--call-google (query provider-info)
+  "Call Google API."
+  (let* ((api-key (plist-get provider-info :api-key))
+         (base-url (plist-get provider-info :base-url))
+         (model (or aiaos-cli--model "gemini-pro"))
+         (url (format "%s/models/%s:generateContent?key=%s" base-url model api-key))
+         (data `(("contents" . ((list :parts . ((list :text . ,query))))))))
+    (aiaos-cli--make-api-request url nil data)))
+
+(defun aiaos-cli--call-ollama (query provider-info)
+  "Call Ollama API."
+  (let* ((base-url (plist-get provider-info :base-url))
+         (model (or aiaos-cli--model "llama2"))
+         (url (format "%s/api/generate" base-url))
+         (data `(("model" . ,model)
+                 ("prompt" . ,query)
+                 ("stream" . nil)
+                 ("temperature" . ,aiaos-cli--temperature)
+                 ("num_predict" . ,aiaos-cli--max-tokens))))
+    (aiaos-cli--make-api-request url nil data)))
+
+(defun aiaos-cli--make-api-request (url headers data)
+  "Make an API request to the given URL."
+  (let* ((json-data (json-encode data))
+         (response (url-retrieve-synchronously url
+                                              :request-method "POST"
+                                              :headers headers
+                                              :noquery t
+                                              :type 'json
+                                              :data json-data)))
+    (if (stringp response)
+        (progn
+          (json-parse-string response :object-type 'alist)
+          (aiaos-cli--parse-api-response response))
+      (error "API request failed"))))
+
+(defun aiaos-cli--parse-api-response (response)
+  "Parse the API response and extract the message content."
+  (let ((parsed (json-parse-string response :object-type 'alist)))
+    (pcase aiaos-cli--current-provider
+      ("openai" (cdr (assoc 'choices parsed)))
+      ("anthropic" (cdr (assoc 'content parsed)))
+      ("google" (cdr (assoc 'candidates parsed)))
+      ("ollama" (cdr (assoc 'response parsed)))
+      (_ (error "Unknown provider: %s" aiaos-cli--current-provider)))))
+
+
+;;; Provider Configuration
+
+(defun aiaos-cli--configure-provider (provider-name)
+  "Configure an LLM provider."
+  (interactive)
+  (let ((config-file (expand-file-name ".aiaos/providers.json" aiaos-cli-config-dir)))
+    (unless (file-exists-p config-file)
+      (make-directory (file-name-directory config-file) t))
+    (let ((providers `(("openai" . ,aiaos-cli-openai-api-key)
+                       ("anthropic" . ,aiaos-cli-anthropic-api-key)
+                       ("google" . ,aiaos-cli-google-api-key)
+                       ("ollama" . ,aiaos-cli-ollama-api-url))))
+      (write-file config-file (json-encode providers)))))
+
+(defun aiaos-cli--load-provider-config ()
+  "Load provider configuration from file."
+  (let ((config-file (expand-file-name ".aiaos/providers.json" aiaos-cli-config-dir)))
+    (when (file-exists-p config-file)
+      (let ((content (read-file config-file)))
+        (when content
+          (let ((providers (json-parse-string content :object-type 'alist)))
+            (setf (alist-get 'openai providers) (alist-get 'openai providers))
+            (setf (alist-get 'anthropic providers) (alist-get 'anthropic providers))
+            (setf (alist-get 'google providers) (alist-get 'google providers))
+            (setf (alist-get 'ollama providers) (alist-get 'ollama providers))))))))
+
+(provide 'aiaos-cli-llm)
+;;; aiaos-cli-llm.el ends here

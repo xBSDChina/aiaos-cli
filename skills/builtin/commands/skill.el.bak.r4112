@@ -1,0 +1,470 @@
+;;; commands/skill.el --- 技能管理命令 -*- lexical-binding: t; -*-
+
+(require 'aiaos-cli-core)
+(require 'aiaos-cli-router)
+(require 'aiaos-cli-skill)
+(require 'cl-lib)
+
+(defun aiaos-cli-skill-builtin/skill-list (_args _options _ctx)
+  "List loaded skills."
+    (let* ((skills-list aiaos-cli--loaded-skills)
+         (skill-names (mapcar (lambda (s)
+                                (aiaos-cli-skill-name s))
+                              skills-list))
+         (output (if skill-names
+                     (format "Loaded skills (%d):\n%s"
+                             (length skill-names)
+                             (mapconcat (lambda (n)
+                                          (format "  - %s" n))
+                                        skill-names "\n"))
+                   "No skills loaded")))
+    (aiaos-cli--result-success
+     :skills skill-names
+     :output output)))
+
+(defun aiaos-cli-skill-builtin/skill-info (args _options _ctx)
+  "Show details for a single skill."
+    (let ((name (aiaos-cli--arg-value args "name")))
+    (if (not name)
+        (aiaos-cli--result-error "MISSING_ARG" "skill info requires <name>")
+      (let ((skill (cl-find name aiaos-cli--loaded-skills
+                            :test (lambda (s)
+                                    (string= (aiaos-cli-skill-name s) name)))))
+        (if (not skill)
+            (aiaos-cli--result-error "SKILL_NOT_FOUND"
+                                     (format "Skill '%s' not loaded" name))
+          (let ((output (format "Skill: %s\nVersion: %s\nDescription: %s\nAuthor: %s\nPath: %s\nEnabled: %s"
+                                (aiaos-cli-skill-name skill)
+                                (aiaos-cli-skill-version skill)
+                                (aiaos-cli-skill-description skill)
+                                (aiaos-cli-skill-author skill)
+                                (aiaos-cli-skill-path skill)
+                                (aiaos-cli-skill-enabled skill))))
+            (aiaos-cli--result-success
+             :skill skill
+             :output output)))))))
+
+(defun aiaos-cli-skill-builtin/skill-install (args _options _ctx)
+  "Install a skill from a directory path (copy into user skill dir).
+
+The source directory must contain a `skill.yaml'. The skill is
+copied into `aiaos-cli-skill-user-dir' and registered in the
+loaded-skills table so it can be enabled/disabled immediately.
+"
+    (let ((src (aiaos-cli--arg-value args "path")))
+    (if (not src)
+        (aiaos-cli--result-error "MISSING_ARG"
+                                 "skill install requires <path>")
+      (unless (file-directory-p src)
+        (aiaos-cli--result-error "NOT_A_DIRECTORY"
+                                 (format "Source path is not a directory: %s" src)))
+      (unless (file-exists-p (expand-file-name "skill.yaml" src))
+        (aiaos-cli--result-error "MISSING_MANIFEST"
+                                 (format "No skill.yaml in %s" src)))
+      (let* ((name (file-name-nondirectory (directory-file-name src)))
+             (dest-dir (expand-file-name "~/.config/aiaos/skills"))
+             (dest (expand-file-name name dest-dir)))
+        (make-directory dest-dir t)
+        (copy-tree src dest)
+        ;; Register the installed skill in-memory.
+        (let ((skill (list :name name
+                           :path dest
+                           :enabled t
+                           :version "1.0.0"
+                           :description "installed"
+                           :author "user"
+                           :license "MIT"
+                           :metadata '()
+                           :commands '()
+                           :hooks '())))
+          (setq aiaos-cli--loaded-skills
+                (cons skill (cl-remove name aiaos-cli--loaded-skills
+                                       :test (lambda (s)
+                                               (string= (aiaos-cli-skill-name s) name))))))
+        (aiaos-cli--result-success
+         :name name
+         :path dest
+         :output (format "Installed skill '%s' -> %s" name dest))))))
+
+(defun aiaos-cli-skill-builtin/skill-enable (args _options _ctx)
+  "Enable a loaded skill."
+    (let ((name (aiaos-cli--arg-value args "name")))
+    (if (not name)
+        (aiaos-cli--result-error "MISSING_ARG"
+                                 "skill enable requires <name>")
+      (let ((skill (cl-find name aiaos-cli--loaded-skills
+                            :test (lambda (s)
+                                    (string= (aiaos-cli-skill-name s) name)))))
+        (if (not skill)
+            (aiaos-cli--result-error "SKILL_NOT_FOUND"
+                                     (format "Skill '%s' not loaded" name))
+          (setf (plist-get skill :enabled) t)
+          (aiaos-cli--result-success
+           :name name
+           :enabled t
+           :output (format "Enabled skill '%s'" name)))))))
+
+(defun aiaos-cli-skill-builtin/skill-disable (args _options _ctx)
+  "Disable a loaded skill."
+    (let ((name (aiaos-cli--arg-value args "name")))
+    (if (not name)
+        (aiaos-cli--result-error "MISSING_ARG"
+                                 "skill disable requires <name>")
+      (let ((skill (cl-find name aiaos-cli--loaded-skills
+                            :test (lambda (s)
+                                    (string= (aiaos-cli-skill-name s) name)))))
+        (if (not skill)
+            (aiaos-cli--result-error "SKILL_NOT_FOUND"
+                                     (format "Skill '%s' not loaded" name))
+          (setf (plist-get skill :enabled) nil)
+          (aiaos-cli--result-success
+           :name name
+           :enabled nil
+           :output (format "Disabled skill '%s'" name)))))))
+
+;; 参数读取辅助：兼容 flat plist、list-of-plists 与 hash-table 三种 args 形式。
+(defun aiaos-cli--arg-value (args key)
+  (cond
+   ((hash-table-p args)
+    (gethash key args))
+   ((and (listp args) (keywordp (car args)))
+    (plist-get args (intern (concat ":" key))))
+   ((listp args)
+    (cl-loop for a in args
+             when (and (listp a)
+                       (eq (car a) (intern (concat ":" key))))
+             do (return (cdr a))))
+   (t nil)))
+
+;; 注册命令
+(aiaos-cli-register-command
+ "builtin" "skill-list"
+ #'aiaos-cli-skill-builtin/skill-list
+ :description "列出已加载技能"
+ :args '()
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "builtin" "skill-info"
+ #'aiaos-cli-skill-builtin/skill-info
+ :description "查看技能详情"
+ :args '((:name "name" :type string :required t :description "技能名称"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "builtin" "skill-install"
+ #'aiaos-cli-skill-builtin/skill-install
+ :description "从目录安装技能"
+ :args '((:name "path" :type string :required t :description "技能目录路径"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "builtin" "skill-enable"
+ #'aiaos-cli-skill-builtin/skill-enable
+ :description "启用技能"
+ :args '((:name "name" :type string :required t :description "技能名称"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "builtin" "skill-disable"
+ #'aiaos-cli-skill-builtin/skill-disable
+ :description "禁用技能"
+ :args '((:name "name" :type string :required t :description "技能名称"))
+ :options '()
+ :skill "builtin")
+
+(provide 'aiaos-cli-skill-builtin/commands/skill)
+;;; commands/skill.el ends here
+
+;; R637: 同时在 "skill" 域下注册别名，使 `aiaos-cli skill list' 等
+;; 用户友好的调用形式可以直接路由到对应 handler（`aiaos-cli-execute'
+;; 使用 "domain/action" 拼接键查找，因此 domain 必须是 "skill"）。
+(aiaos-cli-register-command
+ "skill" "list"
+ #'aiaos-cli-skill-builtin/skill-list
+ :description "列出已加载技能"
+ :args '()
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "info"
+ #'aiaos-cli-skill-builtin/skill-info
+ :description "查看技能详情"
+ :args '((:name "name" :type string :required t :description "技能名称"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "install"
+ #'aiaos-cli-skill-builtin/skill-install
+ :description "从目录安装技能"
+ :args '((:name "path" :type string :required t :description "技能目录路径"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "enable"
+ #'aiaos-cli-skill-builtin/skill-enable
+ :description "启用技能"
+ :args '((:name "name" :type string :required t :description "技能名称"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "disable"
+ #'aiaos-cli-skill-builtin/skill-disable
+ :description "禁用技能"
+ :args '((:name "name" :type string :required t :description "技能名称"))
+ :options '()
+ :skill "builtin")
+
+;;; R670: 新增缺失的 skill 子命令
+
+(defun aiaos-cli-skill-builtin/skill-validate (args _options _ctx)
+  "Validate a skill's metadata by checking skill.yaml."
+  (let ((path (aiaos-cli--arg-value args "path")))
+    (if (not path)
+        (aiaos-cli--result-error "MISSING_ARG" "skill validate requires <path>")
+      (let* ((skill-dir (if (file-directory-p path)
+                            path
+                          (expand-file-name path)))
+             (manifest (expand-file-name "skill.yaml" skill-dir)))
+        (cond
+         ((not (file-directory-p skill-dir))
+          (aiaos-cli--result-error "NOT_A_DIRECTORY"
+                                   (format "Path is not a directory: %s" skill-dir)))
+         ((not (file-exists-p manifest))
+          (aiaos-cli--result-error "MISSING_MANIFEST"
+                                   (format "No skill.yaml found in %s" skill-dir)))
+         (t
+          (let ((yaml-content (aiaos-cli-skill--read-yaml-file manifest)))
+            (if (not yaml-content)
+                (aiaos-cli--result-error "PARSE_ERROR"
+                                         (format "Failed to parse skill.yaml in %s" skill-dir))
+              (let* ((name (gethash "name" yaml-content))
+                     (version (gethash "version" yaml-content))
+                     (description (gethash "description" yaml-content))
+                     (author (gethash "author" yaml-content))
+                     (license (gethash "license" yaml-content))
+                     (errors '())
+                     (warnings '()))
+                (unless name
+                  (push "Missing 'name' field" errors))
+                (unless version
+                  (push "Missing 'version' field" errors))
+                (unless description
+                  (push "Missing 'description' field" warnings))
+                (if errors
+                    (aiaos-cli--result-error "VALIDATION_FAILED"
+                                             (format "Skill validation failed:\n%s"
+                                                     (mapconcat #'identity errors "\n")))
+                  (aiaos-cli--result-success
+                   :valid t
+                   :name name
+                   :version version
+                   :description description
+                   :author author
+                   :license license
+                   :warnings warnings
+                   :output (format "Skill '%s' v%s is valid (with %d warnings)"
+                                   name version (length warnings)))))))))))))
+
+(defun aiaos-cli-skill-builtin/skill-run (args _options _ctx)
+  "Run a skill's command by domain/action."
+  (let ((domain (aiaos-cli--arg-value args "domain"))
+        (action (aiaos-cli--arg-value args "action")))
+    (if (or (not domain) (not action))
+        (aiaos-cli--result-error "MISSING_ARG"
+                                 "skill run requires <domain> <action>")
+      (let ((cmd (aiaos-cli-find-command domain action)))
+        (if (not cmd)
+            (aiaos-cli--result-error "COMMAND_NOT_FOUND"
+                                     (format "Command '%s/%s' not found" domain action))
+          (let ((result (aiaos-cli-execute domain action '())))
+            (aiaos-cli--result-success
+             :domain domain
+             :action action
+             :result result
+             :output (format "Executed %s/%s" domain action))))))))
+
+(defun aiaos-cli-skill-builtin/skill-deps (args _options _ctx)
+  "Show dependencies for loaded skills."
+  (let* ((skill-name (aiaos-cli--arg-value args "name"))
+         (skills (if skill-name
+                     (list skill-name)
+                   (mapcar (lambda (s) (aiaos-cli-skill-name s))
+                           aiaos-cli--loaded-skills)))
+         (deps-list '()))
+    (dolist (name skills)
+      (let ((skill (cl-find name aiaos-cli--loaded-skills
+                            :test (lambda (s)
+                                    (string= (aiaos-cli-skill-name s) name)))))
+        (when skill
+          (let ((meta (aiaos-cli-skill-metadata skill)))
+            (when (and meta (listp meta))
+              (let ((dep-entry (assq 'dependencies meta)))
+                (when dep-entry
+                  (dolist (dep (cdr dep-entry))
+                    (push (list :skill name :dependency dep) deps-list)))))))))
+    (aiaos-cli--result-success
+     :dependencies deps-list
+     :output (if deps-list
+                 (format "Dependencies:\n%s"
+                         (mapconcat (lambda (d)
+                                      (format "  %s -> %s"
+                                              (plist-get d :skill)
+                                              (plist-get d :dependency)))
+                                    deps-list "\n"))
+               "No dependencies declared"))))
+
+(defun aiaos-cli-skill-builtin/skill-create (args _options _ctx)
+  "Create a skill skeleton directory with skill.yaml."
+  (let ((name (aiaos-cli--arg-value args "name")))
+    (if (not name)
+        (aiaos-cli--result-error "MISSING_ARG" "skill create requires <name>")
+      (let* ((base-dir (expand-file-name "~/.config/aiaos/skills"))
+             (skill-dir (expand-file-name name base-dir))
+             (manifest (expand-file-name "skill.yaml" skill-dir)))
+        (if (file-exists-p skill-dir)
+            (aiaos-cli--result-error "SKILL_EXISTS"
+                                     (format "Skill directory already exists: %s" skill-dir))
+          (progn
+            (make-directory skill-dir t)
+            (with-temp-file manifest
+              (insert (format "name: %s\nversion: 0.1.0\ndescription: A new skill\nauthor: user\nlicense: MIT\n"
+                              name)))
+            (aiaos-cli--result-success
+             :name name
+             :path skill-dir
+             :manifest manifest
+             :output (format "Created skill '%s' at %s" name skill-dir))))))))
+
+(defun aiaos-cli-skill-builtin/skill-uninstall (args _options _ctx)
+  "Uninstall a skill by removing it from the user skill dir."
+  (let ((name (aiaos-cli--arg-value args "name")))
+    (if (not name)
+        (aiaos-cli--result-error "MISSING_ARG" "skill uninstall requires <name>")
+      (let* ((base-dir (expand-file-name "~/.config/aiaos/skills"))
+             (skill-dir (expand-file-name name base-dir)))
+        (if (not (file-directory-p skill-dir))
+            (aiaos-cli--result-error "SKILL_NOT_FOUND"
+                                     (format "Skill directory not found: %s" skill-dir))
+          (progn
+            (delete-directory skill-dir t t)
+            (setq aiaos-cli--loaded-skills
+                  (cl-remove name aiaos-cli--loaded-skills
+                             :test (lambda (s)
+                                     (string= (aiaos-cli-skill-name s) name))))
+            (aiaos-cli--result-success
+             :name name
+             :path skill-dir
+             :output (format "Uninstalled skill '%s'" name))))))))
+
+(defun aiaos-cli-skill-builtin/skill-update (args _options _ctx)
+  "Update a skill from its source directory."
+  (let ((name (aiaos-cli--arg-value args "name"))
+        (path (aiaos-cli--arg-value args "path")))
+    (if (not name)
+        (aiaos-cli--result-error "MISSING_ARG" "skill update requires <name>")
+      (let* ((base-dir (expand-file-name "~/.config/aiaos/skills"))
+             (skill-dir (expand-file-name name base-dir)))
+        (if (not (file-directory-p skill-dir))
+            (aiaos-cli--result-error "SKILL_NOT_FOUND"
+                                     (format "Skill directory not found: %s" skill-dir))
+          (if (and path (file-directory-p path))
+              (progn
+                (delete-directory skill-dir t t)
+                (copy-tree path skill-dir)
+                (aiaos-cli--result-success
+                 :name name
+                 :updated t
+                 :output (format "Updated skill '%s' from %s" name path)))
+            (aiaos-cli--result-success
+             :name name
+             :updated t
+             :output (format "Skill '%s' is already up to date (no source specified)" name))))))))
+
+(defun aiaos-cli-skill-builtin/skill-search (args _options _ctx)
+  "Search installed skills by name or description."
+  (let ((query (aiaos-cli--arg-value args "query")))
+    (if (not query)
+        (aiaos-cli--result-error "MISSING_ARG" "skill search requires <query>")
+      (let* ((base-dir (expand-file-name "~/.config/aiaos/skills"))
+             (results '()))
+        (when (file-directory-p base-dir)
+          (cl-loop for dir in (directory-files base-dir t)
+                   when (and (file-directory-p dir)
+                             (string-match-p query (file-name-nondirectory dir)))
+                   do (push (file-name-nondirectory dir) results)))
+        (aiaos-cli--result-success
+         :query query
+         :results results
+         :count (length results)
+         :output (if results
+                     (format "Found %d skill(s) matching '%s':\n%s"
+                             (length results) query
+                             (mapconcat (lambda (r) (format "  - %s" r)) results "\n"))
+                   (format "No skills found matching '%s'" query)))))))
+
+(aiaos-cli-register-command
+ "skill" "validate"
+ #'aiaos-cli-skill-builtin/skill-validate
+ :description "校验技能元数据"
+ :args '((:name "path" :type string :required t :description "技能目录路径"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "run"
+ #'aiaos-cli-skill-builtin/skill-run
+ :description "运行技能命令"
+ :args '((:name "domain" :type string :required t :description "命令域")
+         (:name "action" :type string :required t :description "命令动作"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "deps"
+ #'aiaos-cli-skill-builtin/skill-deps
+ :description "管理技能依赖"
+ :args '((:name "name" :type string :required nil :description "技能名称"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "create"
+ #'aiaos-cli-skill-builtin/skill-create
+ :description "创建技能骨架"
+ :args '((:name "name" :type string :required t :description "技能名称"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "uninstall"
+ #'aiaos-cli-skill-builtin/skill-uninstall
+ :description "卸载技能"
+ :args '((:name "name" :type string :required t :description "技能名称"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "update"
+ #'aiaos-cli-skill-builtin/skill-update
+ :description "更新技能"
+ :args '((:name "name" :type string :required t :description "技能名称")
+         (:name "path" :type string :required nil :description "源路径"))
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "skill" "search"
+ #'aiaos-cli-skill-builtin/skill-search
+ :description "搜索技能"
+ :args '((:name "query" :type string :required t :description "搜索关键词"))
+ :options '()
+ :skill "builtin")

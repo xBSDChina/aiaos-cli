@@ -1,0 +1,178 @@
+;;; aiaos-cli-protocol.el --- AIAOS Protocol Support -*- lexical-binding: t; -*-
+
+;; This module implements AIAOS protocol support.
+
+(provide 'aiaos-cli-protocol)
+(require 'aiaos-cli)
+
+(defgroup aiaos-cli-protocol nil
+  "AIAOS CLI Protocol Support"
+  :group 'aiaos-cli
+  :prefix "aiaos-cli-protocol-")
+
+(defvar aiaos-cli--protocols nil
+  "Registered AIAOS protocols.")
+
+(defvar aiaos-cli--active-protocols nil
+  "Currently active protocols.")
+
+
+;;; Protocol Registration
+
+(defun aiaos-cli--register-protocol (protocol-name &optional protocol-desc)
+  "Register a new AIAOS protocol."
+  (let ((protocol (list :name protocol-name
+                        :description (or protocol-desc (format "Protocol: %s" protocol-name))
+                        :status "registered"
+                        :version "1.0.0")))
+    (push protocol aiaos-cli--protocols)
+    (aiaos-cli--append-output (format "✓ Protocol registered: %s" protocol-name))
+    protocol))
+
+(defun aiaos-cli--unregister-protocol (protocol-name)
+  "Unregister a protocol."
+  (interactive)
+  (let ((protocol (seq-find (lambda (p) (eq (alist-get :name p) protocol-name)) aiaos-cli--protocols)))
+    (if protocol
+        (progn
+          (setq aiaos-cli--protocols (remove protocol aiaos-cli--protocols))
+          (aiaos-cli--append-output (format "✗ Protocol unregistered: %s" protocol-name)))
+      (error "Protocol not found: %s" protocol-name))))
+
+(defun aiaos-cli--list-protocols ()
+  "List all registered protocols."
+  (interactive)
+  (aiaos-cli--append-output "=== AIAOS Protocols ===")
+  (dolist (protocol aiaos-cli--protocols)
+    (let ((name (alist-get :name protocol))
+          (desc (alist-get :description protocol))
+          (status (alist-get :status protocol)))
+      (aiaos-cli--append-output (format "  [%s] %s - %s" status name desc)))))
+
+
+;;; Protocol Activation
+
+(defun aiaos-cli--activate-protocol (protocol-name)
+  "Activate a protocol."
+  (interactive)
+  (let ((protocol (seq-find (lambda (p) (eq (alist-get :name p) protocol-name)) aiaos-cli--protocols)))
+    (if protocol
+        (progn
+          (setf (alist-get :status protocol) "active")
+          (push protocol-name aiaos-cli--active-protocols)
+          (aiaos-cli--append-output (format "✓ Protocol activated: %s" protocol-name)))
+      (error "Protocol not found: %s" protocol-name))))
+
+(defun aiaos-cli--deactivate-protocol (protocol-name)
+  "Deactivate a protocol."
+  (interactive)
+  (let ((protocol (seq-find (lambda (p) (eq (alist-get :name p) protocol-name)) aiaos-cli--protocols)))
+    (if protocol
+        (progn
+          (setf (alist-get :status protocol) "inactive")
+          (setq aiaos-cli--active-protocols (remove protocol-name aiaos-cli--active-protocols))
+          (aiaos-cli--append-output (format "✗ Protocol deactivated: %s" protocol-name)))
+      (error "Protocol not found: %s" protocol-name))))
+
+(defun aiaos-cli--toggle-protocol (protocol-name)
+  "Toggle protocol activation state."
+  (interactive)
+  (if (member protocol-name aiaos-cli--active-protocols)
+      (aiaos-cli--deactivate-protocol protocol-name)
+    (aiaos-cli--activate-protocol protocol-name)))
+
+
+;;; Protocol Operations
+
+(defun aiaos-cli--protocol-call (protocol-name &rest args)
+  "Call a protocol with arguments."
+  (interactive)
+  (let ((protocol (seq-find (lambda (p) (eq (alist-get :name p) protocol-name)) aiaos-cli--protocols)))
+    (if protocol
+        (progn
+          (aiaos-cli--append-output (format "Calling protocol %s with args: %s" protocol-name args))
+          (pcase protocol-name
+            ("http" (aiaos-cli--protocol-http-call args))
+            ("mqtt" (aiaos-cli--protocol-mqtt-call args))
+            ("websocket" (aiaos-cli--protocol-websocket-call args))
+            ("grpc" (aiaos-cli--protocol-grpc-call args))
+            ("tcp" (aiaos-cli--protocol-tcp-call args))
+            ("udp" (aiaos-cli--protocol-udp-call args))
+            (_ (error "Unknown protocol: %s" protocol-name))))
+        (error "Protocol not found: %s" protocol-name))))
+
+(defun aiaos-cli--protocol-http-call (args)
+  "HTTP protocol call."
+  (let ((url (car args))
+        (method (or (cadr args) "GET"))
+        (headers (or (caddr args) nil))
+        (body (or (cadddr args) nil)))
+    (aiaos-cli--append-output (format "HTTP %s %s" method url))
+    (url-retrieve-synchronously url
+                                :request-method method
+                                :headers headers
+                                :noquery t
+                                :data body)))
+
+(defun aiaos-cli--protocol-mqtt-call (args)
+  "MQTT protocol call."
+  (let ((host (car args))
+        (port (or (cadr args) 1883))
+        (topic (caddr args))
+        (message (cadddr args))
+        (qos (or (car (cddddr args)) 0)))
+    (aiaos-cli--append-output (format "MQTT publish %s to %s:%d" message topic port))
+    ;; MQTT implementation would use mqtt.el package
+    (message "MQTT protocol not yet implemented")))
+
+(defun aiaos-cli--protocol-websocket-call (args)
+  "WebSocket protocol call."
+  (let ((url (car args))
+        (message (cadr args))
+        (on-open (or (caddr args) nil))
+        (on-message (or (cadddr args) nil))
+        (on-close (or (car (cddddr args)) nil)))
+    (aiaos-cli--append-output (format "WebSocket connect %s" url))
+    ;; WebSocket implementation would use websocket.el package
+    (message "WebSocket protocol not yet implemented")))
+
+(defun aiaos-cli--protocol-grpc-call (args)
+  "gRPC protocol call."
+  (let ((service (car args))
+        (method (cadr args))
+        (message (caddr args)))
+    (aiaos-cli--append-output (format "gRPC call %s.%s" service method))
+    ;; gRPC implementation would use grpc.el package
+    (message "gRPC protocol not yet implemented")))
+
+(defun aiaos-cli--protocol-tcp-call (args)
+  "TCP protocol call."
+  (let ((host (car args))
+        (port (cadr args))
+        (message (caddr args)))
+    (aiaos-cli--append-output (format "TCP connect %s:%d send '%s'" host port message))
+    (message "TCP protocol not yet implemented")))
+
+(defun aiaos-cli--protocol-udp-call (args)
+  "UDP protocol call."
+  (let ((host (car args))
+        (port (cadr args))
+        (message (caddr args)))
+    (aiaos-cli--append-output (format "UDP send %s:%d '%s'" host port message))
+    (message "UDP protocol not yet implemented")))
+
+
+;;; Protocol State
+
+(defun aiaos-cli--protocol-status ()
+  "Get status of all protocols."
+  (interactive)
+  (aiaos-cli--append-output "=== Protocol Status ===")
+  (dolist (protocol aiaos-cli--protocols)
+    (let ((name (alist-get :name protocol))
+          (status (alist-get :status protocol))
+          (active (member name aiaos-cli--active-protocols)))
+      (aiaos-cli--append-output (format "  %s: %s%s" name status (if active " [active]" ""))))))
+
+(provide 'aiaos-cli-protocol)
+;;; aiaos-cli-protocol.el ends here

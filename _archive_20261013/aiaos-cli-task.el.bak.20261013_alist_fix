@@ -1,0 +1,185 @@
+;;; aiaos-cli-task.el --- Task Management -*- lexical-binding: t; -*-
+
+;; This module implements AIAOS task management capabilities.
+
+(provide 'aiaos-cli-task)
+(require 'aiaos-cli)
+
+(defgroup aiaos-cli-task nil
+  "AIAOS CLI Task Management"
+  :group 'aiaos-cli
+  :prefix "aiaos-cli-task-")
+
+(defcustom aiaos-cli-task-default-timeout 3600
+  "Default task timeout in seconds."
+  :type 'integer
+  :group 'aiaos-cli-task)
+
+(defvar aiaos-cli--tasks nil
+  "Active tasks.")
+
+(defvar aiaos-cli--task-counter 0
+  "Task counter for unique IDs.")
+
+(defvar aiaos-cli--active-task-id nil
+  "Currently active task ID.")
+
+
+;;; Task Creation
+
+(defun aiaos-cli--create-task (title &optional description)
+  "Create a new task with TITLE and optional DESCRIPTION."
+  (setq aiaos-cli--task-counter (1+ aiaos-cli--task-counter))
+  (let* ((task-id (format "task-%d" aiaos-cli--task-counter))
+         (task (list :id task-id
+                     :title title
+                     :description description
+                     :status "pending"
+                     :progress 0
+                     :created-at (current-time)
+                     :steps nil
+                     :iterations 0)))
+    (push task aiaos-cli--tasks)
+    (aiaos-cli--append-output (format "✓ Task created: %s (ID: %s)" title task-id))
+    task))
+
+(defun aiaos-cli--start-task (task-id)
+  "Start a task by ID."
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (setf (alist-get :status task) "running")
+          (setf (alist-get :progress task) 10)
+          (aiaos-cli--append-output (format "✓ Task started: %s" task-id))
+          (setq aiaos-cli--active-task-id task-id))
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--complete-task (task-id)
+  "Complete a task by ID."
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (setf (alist-get :status task) "completed")
+          (setf (alist-get :progress task) 100)
+          (aiaos-cli--append-output (format "✓ Task completed: %s" task-id))
+          (when (eq aiaos-cli--active-task-id task-id)
+            (setq aiaos-cli--active-task-id nil))
+          task)
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--cancel-task (task-id)
+  "Cancel a task by ID."
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (setf (alist-get :status task) "cancelled")
+          (aiaos-cli--append-output (format "✗ Task cancelled: %s" task-id))
+          (when (eq aiaos-cli--active-task-id task-id)
+            (setq aiaos-cli--active-task-id nil))
+          task)
+      (error "Task not found: %s" task-id))))
+
+
+;;; Task Operations
+
+(defun aiaos-cli--add-task-step (task-id step-title)
+  "Add a step to a task."
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (let ((step (list :title step-title :status "pending" :created-at (current-time))))
+            (push step (alist-get :steps task))
+            (aiaos-cli--append-output (format "✓ Step added to task %s: %s" task-id step-title)))
+          task)
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--mark-step-complete (task-id step-index)
+  "Mark a task step as complete."
+  (let ((task (aiaos-cli--find-task task-id))
+        (steps (alist-get :steps task)))
+    (if (and task (< -1 step-index (length steps)))
+        (progn
+          (setf (alist-get :status (nth step-index steps)) "completed")
+          (aiaos-cli--update-task-progress task-id)
+          (aiaos-cli--append-output (format "✓ Step %d completed in task %s" step-index task-id)))
+      (error "Invalid step index or task not found"))))
+
+(defun aiaos-cli--update-task-progress (task-id)
+  "Update task progress based on completed steps."
+  (let ((task (aiaos-cli--find-task task-id))
+        (steps (alist-get :steps task)))
+    (when steps
+      (let ((completed (seq-filter (lambda (s) (eq (alist-get :status s) "completed")) steps))
+            (total (length steps)))
+        (setf (alist-get :progress task) (/ (* (length completed) 100) total))
+        (aiaos-cli--append-output (format "Task %s progress: %d%%" task-id (alist-get :progress task)))))))
+
+
+;;; Task Management Commands
+
+(defun aiaos-cli--task-list ()
+  "List all tasks."
+  (interactive)
+  (aiaos-cli--append-output "=== Task List ===")
+  (dolist (task aiaos-cli--tasks)
+    (let ((status (alist-get :status task))
+          (progress (alist-get :progress task))
+          (title (alist-get :title task))
+          (id (alist-get :id task)))
+      (aiaos-cli--append-output (format "  [%s] %s (%s) - %d%%" id title status progress)))))
+
+(defun aiaos-cli--task-show (task-id)
+  "Show detailed information about a task."
+  (interactive)
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (aiaos-cli--append-output (format "=== Task: %s ===" (alist-get :title task)))
+          (aiaos-cli--append-output (format "ID: %s" (alist-get :id task)))
+          (aiaos-cli--append-output (format "Status: %s" (alist-get :status task)))
+          (aiaos-cli--append-output (format "Progress: %d%%" (alist-get :progress task)))
+          (aiaos-cli--append-output (format "Created: %s" (format-time-string "%Y-%m-%d %H:%M:%S" (alist-get :created-at task))))
+          (let ((steps (alist-get :steps task)))
+            (when steps
+              (aiaos-cli--append-output "Steps:")
+              (dolist (step steps)
+                (aiaos-cli--append-output (format "  - [%s] %s" (alist-get :status step) (alist-get :title step)))))))
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--task-delete (task-id)
+  "Delete a task."
+  (interactive)
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (setq aiaos-cli--tasks (remove task aiaos-cli--tasks))
+          (when (eq aiaos-cli--active-task-id task-id)
+            (setq aiaos-cli--active-task-id nil))
+          (aiaos-cli--append-output (format "✓ Task deleted: %s" task-id)))
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--find-task (task-id)
+  "Find a task by ID."
+  (seq-find (lambda (task) (eq (alist-get :id task) task-id)) aiaos-cli--tasks))
+
+
+;;; Task Iteration Flow
+
+(defun aiaos-cli--task-iteration (task-id &optional iterations)
+  "Perform task iteration for a task."
+  (interactive)
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (let ((iter-count (or iterations 1)))
+            (dotimes (i iter-count)
+              (aiaos-cli--append-output (format "Iteration %d/%d for task %s" (1+ i) iter-count task-id))
+              (aiaos-cli--update-task-progress task-id)
+              (sleep-for 0.1))
+            (setf (alist-get :iterations task) (+ (alist-get :iterations task) iter-count))
+            (aiaos-cli--append-output (format "✓ Task %s completed %d iterations" task-id iter-count)))
+          task)
+      (error "Task not found: %s" task-id))))
+
+(provide 'aiaos-cli-task)
+;;; aiaos-cli-task.el ends here

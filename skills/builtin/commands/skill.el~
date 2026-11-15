@@ -1,0 +1,45 @@
+;;; commands/skill.el --- 技能管理命令 -*- lexical-binding: t; -*-
+
+;;; Code:
+
+(defun aiaos-cli-skill-builtin/skill-list (_args _options _ctx)
+  "List loaded skills"
+  (declare (ignore _args _options _ctx))
+  (let ((skills (hash-table-keys aiaos-cli--skills)))
+    (aiaos-cli--result-success
+     `((skills . ,(if (null skills) '("builtin") skills))
+       (output . ,(format "Loaded skills: %s" (string-join (mapcar 'symbol-name skills) ", ")))))))
+
+(defun aiaos-cli-skill-builtin/skill-info (args options ctx)
+  "Show skill info"
+  (declare (ignore _ctx))
+  (let* ((name (plist-get args :name))
+         (json (or (plist-get options :json) nil))
+         (skill (gethash (intern name) aiaos-cli--skills)))
+    (if skill
+        (aiaos-cli--result-success
+         `((name . ,name)
+           (version . ,(aiaos-cli-skill-version skill))
+           (description . ,(aiaos-cli-skill-description skill))
+           (author . ,(a, aiaos-cli-skill-author skill))
+           (license . ,(aiaos-cli-skill-license skill))))
+      (aiaos-cli--result-error (format "Skill '%s' not found" name) "skill_not_found"))))
+
+(aiaos-cli-register-command
+ "builtin" "skill-list"
+ #'aiaos-cli-skill-builtin/skill-list
+ :description "列出已加载技能"
+ :args '()
+ :options '()
+ :skill "builtin")
+
+(aiaos-cli-register-command
+ "builtin" "skill-info"
+ #'aiaos-cli-skill-builtin/skill-info
+ :description "查看技能详情"
+ :args '((:name "name" :type string :required t :description "技能名称"))
+ :options '((:name "json" :short "j" :type boolean :default nil :description "以JSON格式输出"))
+ :skill "builtin")
+
+(provide 'aiaos-cli-skill-builtin/commands/skill)
+;;; commands/skill.el ends here

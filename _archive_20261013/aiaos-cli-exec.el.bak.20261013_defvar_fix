@@ -1,0 +1,197 @@
+;;; aiaos-cli-exec.el --- Command Execution -*- lexical-binding: t; -*-
+
+;; This module implements AIAOS command execution capabilities.
+
+(provide 'aiaos-cli-exec)
+(require 'aiaos-cli)
+
+(defgroup aiaos-cli-exec nil
+  "AIAOS CLI Command Execution"
+  :group 'aiaos-cli
+  :prefix "aiaos-cli-exec-")
+
+(defcustom aiaos-cli-exec-timeout 300
+  "Default command execution timeout in seconds."
+  :type 'integer
+  :group 'aiaos-cli-exec)
+
+(defcustom aiaos-cli-exec-workdir nil
+  "Default working directory for command execution."
+  :type 'directory
+  :group 'aiaos-cli-exec)
+
+(defvar aiaos-cli--exec-history nil
+  "Command execution history.")
+
+(defvar aiaos-cli--active-exec-id nil
+  "Currently active execution ID.")
+
+
+;;; Command Execution
+
+(defun aiaos-cli--execute-command (command &optional output-fn)
+  "Execute a shell command and return output."
+  (let* ((output (make-string 0 ?\0))
+         (proc (start-process "aiaos-exec" nil "sh" "-c" command))
+         (result nil)
+         (exit-code nil))
+    
+    (set-process-sentinel proc
+                          (lambda (process event)
+                            (when (eq (process-status process) 'exit)
+                              (setq exit-code (process-exit-status process))
+                              (setq result (get-buffer-string (process-buffer process)))
+                              (if (and output-fn (functionp output-fn))
+                                  (funcall output-fn result exit-code)
+                                (aiaos-cli--append-output result))
+                              (kill-buffer (process-buffer process))
+                              (when aiaos-cli--active-exec-id
+                                (setf (alist-get :status (alist-get aiaos-cli--active-exec-id aiaos-cli--executions)) "completed")
+                                (setf (alist-get :exit-code (alist-get aiaos-cli--active-exec-id aiaos-cli--executions)) exit-code)
+                                (setq aiaos-cli--active-exec-id nil)))))
+    
+    (when aiaos-cli--active-exec-id
+      (setf (alist-get :status (alist-get aiaos-cli--active-exec-id aiaos-cli--executions)) "running"))
+    
+    (sleep-for 0.1)
+    (list :command command :output result :exit-code exit-code)))
+
+(defun aiaos-cli--execute-with-async (command)
+  "Execute a command asynchronously and track execution."
+  (setq aiaos-cli--exec-id-counter (1+ aiaos-cli--exec-id-counter))
+  (let* ((exec-id (format "exec-%d" aiaos-cli--exec-id-counter))
+         (exec-info (list :id exec-id
+                          :command command
+                          :status "running"
+                          :start-time (current-time)
+                          :output ""
+                          :exit-code nil)))
+    (push exec-info aiaos-cli--executions)
+    (aiaos-cli--append-output (format "✓ Starting execution: %s (ID: %s)" command exec-id))
+    (setq aiaos-cli--active-exec-id exec-id)
+    (aiaos-cli--execute-command command)))
+
+(defun aiaos-cli--execute-with-sync (command)
+  "Execute a command synchronously and return output."
+  (let ((result (shell-command-to-string command)))
+    (aiaos-cli--append-output (format "Command output:\n%s" result))
+    result))
+
+
+;;; Execution Management
+
+(defun aiaos-cli--exec-list ()
+  "List all command executions."
+  (interactive)
+  (aiaos-cli--append-output "=== Command Execution History ===")
+  (dolist (exec (seq-take aiaos-cli--executions 20))
+    (let ((id (alist-get :id exec))
+          (cmd (alist-get :command exec))
+          (status (alist-get :status exec))
+          (exit-code (alist-get :exit-code exec)))
+      (aiaos-cli--append-output (format "  [%s] %s - Status: %s, Exit: %s" id (substring cmd 0 (min 50 (length cmd))) status exit-code)))))
+
+(defun aiaos-cli--exec-show (exec-id)
+  "Show details of a command execution."
+  (interactive)
+  (let ((exec (aiaos-cli--find-exec exec-id)))
+    (if exec
+        (progn
+          (aiaos-cli--append-output (format "=== Execution: %s ===" exec-id))
+          (aiaos-cli--append-output (format "Command: %s" (alist-get :command exec)))
+          (aiaos-cli--append-output (format "Status: %s" (alist-get :status exec)))
+          (aiaos-cli--append-output (format "Exit Code: %s" (alist-get :exit-code exec)))
+          (aiaos-cli--append-output (format "Started: %s" (format-time-string "%Y-%m-%d %H:%M:%S" (alist-get :start-time exec))))
+          (when (alist-get :output exec)
+            (aiaos-cli--append-output "Output:")
+            (aiaos-cli--append-output (alist-get :output exec)))
+          (when (alist-get :error exec)
+            (aiaos-cli--append-output "Error:")
+            (aiaos-cli--append-output (alist-get :error exec)))
+          exec)
+      (error "Execution not found: %s" exec-id))))
+
+(defun aiaos-cli--exec-cancel (exec-id)
+  "Cancel a running command execution."
+  (interactive)
+  (let ((exec (aiaos-cli--find-exec exec-id)))
+    (if exec
+        (progn
+          (when (eq (alist-get :status exec) "running")
+            (delete-process (alist-get :process exec))
+            (setf (alist-get :status exec) "cancelled")
+            (aiaos-cli--append-output (format "✗ Execution cancelled: %s" exec-id)))
+          (when (eq aiaos-cli--active-exec-id exec-id)
+            (setq aiaos-cli--active-exec-id nil)))
+      (error "Execution not found: %s" exec-id))))
+
+(defun aiaos-cli--exec-clear ()
+  "Clear command execution history."
+  (interactive)
+  (setq aiaos-cli--executions nil)
+  (aiaos-cli--append-output "✓ Command execution history cleared."))
+
+(defun aiaos-cli--find-exec (exec-id)
+  "Find an execution by ID."
+  (seq-find (lambda (exec) (eq (alist-get :id exec) exec-id)) aiaos-cli--executions))
+
+
+;;; Execution Flow Management
+
+(defun aiaos-cli--execution-flow-start (flow-name)
+  "Start an execution flow."
+  (interactive)
+  (let ((flow-id (format "flow-%s-%d" flow-name (current-time)))
+        (flow-info (list :id flow-id
+                         :name flow-name
+                         :status "running"
+                         :steps nil
+                         :current-step 0)))
+    (push flow-info aiaos-cli--executions)
+    (aiaos-cli--append-output (format "✓ Execution flow started: %s (ID: %s)" flow-name flow-id))
+    flow-id))
+
+(defun aiaos-cli--execution-flow-step (flow-id step-command)
+  "Execute a step in an execution flow."
+  (interactive)
+  (let ((flow (aiaos-cli--find-exec flow-id)))
+    (if flow
+        (progn
+          (let ((step (list :command step-command
+                            :status "running"
+                            :start-time (current-time))))
+            (push step (alist-get :steps flow))
+            (aiaos-cli--append-output (format "✓ Step executed in flow %s: %s" flow-id step-command))
+            (setf (alist-get :current-step flow) (+ 1 (alist-get :current-step flow))))
+          flow)
+      (error "Flow not found: %s" flow-id))))
+
+(defun aiaos-cli--execution-flow-complete (flow-id)
+  "Complete an execution flow."
+  (interactive)
+  (let ((flow (aiaos-cli--find-exec flow-id)))
+    (if flow
+        (progn
+          (setf (alist-get :status flow) "completed")
+          (aiaos-cli--append-output (format "✓ Execution flow completed: %s" flow-id))
+          flow)
+      (error "Flow not found: %s" flow-id))))
+
+
+;;; Task Command Integration
+
+(defun aiaos-cli--task-exec-command (task-id command)
+  "Execute a command within a task context."
+  (interactive)
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (let ((exec-id (aiaos-cli--execute-with-async command)))
+            (aiaos-cli--append-output (format "✓ Command executed in task %s: %s (ID: %s)" task-id command exec-id))
+            (aiaos-cli--add-task-step task-id (format "Command: %s" command))
+            exec-id)
+          task)
+      (error "Task not found: %s" task-id))))
+
+(provide 'aiaos-cli-exec)
+;;; aiaos-cli-exec.el ends here

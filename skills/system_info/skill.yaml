@@ -1,0 +1,128 @@
+name: "system_info"
+version: "1.0.0"
+description: "系统信息收集与监控技能，提供CPU、内存、磁盘、操作系统等核心信息的查询功能"
+author: "AIAOS Team"
+license: "MIT"
+category: "system"
+priority: 10
+dependencies:
+  core: ">=1.0.0"
+  skills: []
+  system:
+    - "process"
+    - "network"
+commands:
+  - name: "check_cpu"
+    domain: "system_info"
+    entry: "commands/check_cpu.el"
+    description: "检查CPU使用率、核心数、负载等信息"
+    args: []
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "以JSON格式输出"
+      - name: "--interval"
+        short: "-i"
+        type: "integer"
+        default: 1
+        description: "采样间隔秒数"
+  - name: "check_memory"
+    domain: "system_info"
+    entry: "commands/check_memory.el"
+    description: "检查内存使用情况，包括总内存、已用、可用、缓存等"
+    args: []
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "以JSON格式输出"
+      - name: "--human"
+        short: "-h"
+        type: "boolean"
+        default: true
+        description: "以人类可读格式显示"
+  - name: "check_disk"
+    domain: "system_info"
+    entry: "commands/check_disk.el"
+    description: "检查磁盘使用情况，包括各分区容量、使用率、inode等"
+    args: []
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "以JSON格式输出"
+      - name: "--mount"
+        short: "-m"
+        type: "string"
+        default: ""
+        description: "指定挂载点过滤"
+  - name: "check_os"
+    domain: "system_info"
+    entry: "commands/check_os.el"
+    description: "检查操作系统信息，包括名称、版本、内核、主机名、架构等"
+    args: []
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "以JSON格式输出"
+      - name: "--detail"
+        short: "-d"
+        type: "boolean"
+        default: false
+        description: "显示详细系统信息"
+  - name: "check_load"
+    domain: "system_info"
+    entry: "commands/check_load.el"
+    description: "检查系统负载详细信息（loadavg、进程、上下文切换、中断、僵尸）"
+    args: []
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "以JSON格式输出"
+      - name: "--detail"
+        short: "-d"
+        type: "boolean"
+        default: false
+        description: "显示详细字段"
+
+  - name: "check_net"
+    domain: "system_info"
+    entry: "commands/check_net.el"
+    description: "检查网络接口与 TCP 连接信息（收发字节/包/错误/丢包、TCP 连接数）"
+    args: []
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "以JSON格式输出"
+      - name: "--detail"
+        short: "-d"
+        type: "boolean"
+        default: false
+        description: "显示详细字段"
+
+hooks:
+  on_install: "hooks/post_install.sh"
+  on_uninstall: "hooks/post_uninstall.sh"
+resources:
+  templates:
+    - "templates/system_report.md"
+  schemas:
+    - "schemas/cpu_schema.json"
+    - "schemas/memory_schema.json"
+    - "schemas/disk_schema.json"
+    - "schemas/os_schema.json"
+permissions:
+  - "read_process"
+  - "read_memory"
+  - "read_disk"
+  - "read_os"

@@ -1,0 +1,222 @@
+;;; aiaos-cli.el --- AIAOS CLI for Emacs -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2024 AIAOS Team
+;; Author: AIAOS Team
+;; Version: 1.0.4
+;; Package-Requires: ((emacs "27.1"))
+;; Keywords: aiaos, cli, agent, llm
+
+;;; Commentary:
+;; AIAOS CLI for Emacs - Complete fix version
+;; 1. Fixed "Attempt to set a constant symbol: t" error
+;; 2. Enter key now sends messages
+;; 3. Fixed initialization issues
+;; 4. Improved prompt display
+
+;;; Code:
+
+(require 'cl-lib)
+(add-to-list 'load-path (expand-file-name "/home/shjiaye8/.emacs.d/elpa/s-1.12.0"))
+(require 'json)
+(require 'url)
+(require 's)
+(require 'seq)
+
+(defgroup aiaos-cli nil
+  "AIAOS CLI for Emacs"
+  :group 'tools
+  :prefix "aiaos-cli-")
+
+(defcustom aiaos-cli-config-dir
+  (expand-file-name "~/.aiaos-cli")
+  "Configuration directory for AIAOS CLI."
+  :type 'directory
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-default-provider "openai"
+  "Default LLM provider to use."
+  :type 'string
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-temperature 0.7
+  "Temperature for LLM responses."
+  :type 'number
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-max-tokens 2048
+  "Maximum tokens for LLM responses."
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defvar aiaos-cli--initialized-p nil
+  "Whether AIAOS CLI has been initialized.")
+
+(defvar aiaos-cli--buffer nil
+  "AIAOS CLI buffer.")
+
+(defvar aiaos-cli--history nil
+  "Command history.")
+
+(defvar aiaos-cli--current-provider nil
+  "Currently active provider.")
+
+(defvar aiaos-cli--context-stack '()
+  "Stack of conversation contexts.")
+
+(defvar aiaos-cli--active-task nil
+  "Currently active task.")
+
+(defvar aiaos-cli--tasks nil
+  "List of tasks.")
+
+(defvar aiaos-cli--task-counter 0
+  "Counter for task IDs.")
+
+(defvar aiaos-cli--executions nil
+  "List of executions.")
+
+(defvar aiaos-cli--exec-id-counter 0
+  "Counter for execution IDs.")
+
+(defvar aiaos-cli--active-exec-id nil
+  "Currently active execution ID.")
+
+(defvar aiaos-cli--messages nil
+  "Message history.")
+
+(defvar aiaos-cli--conversations nil
+  "Conversation history.")
+
+(defvar aiaos-cli--active-conversation-id nil
+  "Currently active conversation ID.")
+
+(defvar aiaos-cli--protocols nil
+  "Registered AIAOS protocols.")
+
+(defvar aiaos-cli--active-protocols nil
+  "Currently active protocols.")
+
+(defvar aiaos-cli--providers nil
+  "Registered LLM providers.")
+
+(defvar aiaos-cli--message-flows nil
+  "Message flow tracking.")
+
+(defun aiaos ()
+  "Start AIAOS CLI in a new buffer."
+  (interactive)
+  (let ((buffer-name "*AIAOS CLI*"))
+    (if (get-buffer buffer-name)
+        (switch-to-buffer buffer-name)
+      (with-current-buffer (get-buffer-create buffer-name)
+        (aiaos-cli-mode)
+        (erase-buffer)
+        (aiaos-cli--welcome-message)
+        (aiaos-cli--init-provider aiaos-cli-default-provider)
+        (aiaos-cli--init-protocols)
+        (aiaos-cli--set-initialized)
+        (goto-char (point-max))
+        (aiaos-cli--refresh-status)
+        (message "AIAOS CLI started. Use M-x aiaos to restart.")
+        (switch-to-buffer buffer-name)))))
+
+(defun aiaos-cli--set-initialized ()
+  "Set the initialized flag safely."
+  (setq aiaos-cli--initialized-p t))
+
+(define-minor-mode aiaos-cli-mode
+  "Major mode for AIAOS CLI interaction."
+  :lighter " AIAOS"
+  :keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'aiaos-cli--send-message)
+    (define-key map (kbd "C-c C-c") #'aiaos-cli--send-message)
+    map)
+  (aiaos-cli--mode-setup))
+
+(defun aiaos-cli--mode-setup ()
+  "Setup AIAOS CLI mode."
+  (setq-local truncate-lines t)
+  (setq-local line-number-mode nil)
+  (setq-local column-number-mode t))
+
+(defun aiaos-cli--welcome-message ()
+  "Display welcome message."
+  (insert "AIAOS CLI for Emacs\n")
+  (insert "===================\n\n")
+  (insert "Type your message and press Enter to send.\n")
+  (insert "Use M-x aiaos to restart.\n\n")
+
+)
+(defun aiaos-cli--send-message ()
+  "Send the current message."
+  (interactive)
+  (let ((input (aiaos-cli--get-current-input)))
+    (if input
+        (progn
+          (aiaos-cli--append-output "You: " input "\n")
+          (aiaos-cli--process-message input)
+          (aiaos-cli--clear-input-line)))))
+
+(defun aiaos-cli--get-current-input ()
+  "Get the current input line."
+  (save-excursion
+    (goto-char (point-max))
+    (if (eobp)
+        nil
+      (let ((start (aiaos-cli--last-input-start)))
+        (if (>= start (point))
+            nil
+          (buffer-substring-no-properties start (point))))))
+)
+(defun aiaos-cli--last-input-start ()
+  "Get the start position of the last input line."
+  (save-excursion
+    (goto-char (point-max))
+    (if (bobp)
+        (point)
+      (progn
+        (previous-line 1)
+        (if (and (not (bobp)) (looking-at-p "You: "))
+            (save-excursion
+              (next-line)
+              (point))
+          (point))))))
+
+(defun aiaos-cli--clear-input-line ()
+  "Clear the current input line."
+  (save-excursion
+    (goto-char (point-max))
+    (if (and (> (point) (point-min)) (looking-at-p "\n"))
+        (delete-char -1))))
+
+(defun aiaos-cli--append-output (&rest strings)
+  "Append output strings to the buffer."
+  (save-excursion
+    (goto-char (point-max))
+    (apply 'insert strings)
+    (insert "\n")))
+
+(defun aiaos-cli--process-message (message)
+  "Process a user message."
+  (let ((response (aiaos-cli--generate-response message))))
+    (aiaos-cli--append-output "AIAOS: " response "\n"))
+
+(defun aiaos-cli--generate-response (message)
+  "Generate a response to the message."
+  (format "Response to: %s" message))
+
+(defun aiaos-cli--init-provider (provider-name)
+  "Initialize a provider."
+  (message "Initializing provider: %s" provider-name))
+
+(defun aiaos-cli--init-protocols ()
+  "Initialize protocols."
+  (message "Initializing protocols..."))
+
+(defun aiaos-cli--refresh-status ()
+  "Refresh the status display."
+  (message "Status refreshed."))
+
+(provide 'aiaos-cli)
+;;; aiaos-cli.el ends here

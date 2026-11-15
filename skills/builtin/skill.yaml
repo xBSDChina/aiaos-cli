@@ -1,0 +1,45 @@
+author: AIAOS Team
+commands:
+- args:
+  - description: 要回显的消息
+    name: message
+    required: true
+    type: string
+  description: 回显测试命令
+  domain: builtin
+  entry: commands/echo.el
+  name: echo
+  options:
+  - default: 1
+    description: 重复次数
+    name: --repeat
+    short: -r
+    type: integer
+- args: []
+  description: 显示版本信息
+  domain: builtin
+  entry: commands/version.el
+  name: version
+  options: []
+- args:
+  - description: 技能名称
+    name: skill-name
+    required: true
+    type: string
+  description: 查看技能详细信息
+  domain: builtin
+  entry: commands/skill.el
+  name: skill-info
+  options: []
+dependencies:
+  core: '>=1.0.0'
+  skills: []
+  system: []
+description: AIAOS-CLI 内置核心技能
+hooks: {}
+license: MIT
+name: builtin
+resources:
+  schemas: []
+  templates: []
+version: 1.0.0

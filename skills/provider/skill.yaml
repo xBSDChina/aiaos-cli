@@ -1,0 +1,151 @@
+name: "provider"
+version: "1.0.0"
+description: "Provider 管理技能：provider list/add/remove/use/test/tier/fallback/fallback-order/audit/report"
+author: "AIAOS Team"
+license: "MIT"
+category: "system"
+priority: 10
+dependencies:
+  core: ">=1.0.0"
+  skills: []
+  system: []
+commands:
+  - name: "list"
+    domain: "provider"
+    entry: "commands/list.el"
+    description: "列出所有 provider 及详情"
+    args: []
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "JSON 格式输出"
+      - name: "--tier"
+        short: "-t"
+        type: "string"
+        default: ""
+        description: "按 tier 过滤 (full/active/block)"
+  - name: "add"
+    domain: "provider"
+    entry: "commands/add.el"
+    description: "添加 provider"
+    args:
+      - name: "name"
+        description: "provider 名称"
+      - name: "api-key"
+        description: "API key"
+      - name: "base-url"
+        description: "base URL"
+    options:
+      - name: "--model"
+        short: "-m"
+        type: "string"
+        default: ""
+        description: "模型名称"
+      - name: "--tier"
+        short: "-t"
+        type: "string"
+        default: "active"
+        description: "tier 级别 (full/active/block)"
+  - name: "remove"
+    domain: "provider"
+    entry: "commands/remove.el"
+    description: "删除 provider"
+    args:
+      - name: "name"
+        description: "provider 名称"
+    options: []
+  - name: "use"
+    domain: "provider"
+    entry: "commands/use.el"
+    description: "设置当前使用 provider"
+    args:
+      - name: "name"
+        description: "provider 名称"
+    options: []
+  - name: "test"
+    domain: "provider"
+    entry: "commands/test.el"
+    description: "测试 provider 可用性"
+    args:
+      - name: "name"
+        description: "provider 名称"
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "JSON 格式输出"
+  - name: "tier"
+    domain: "provider"
+    entry: "commands/tier.el"
+    description: "查询或设置 provider tier"
+    args:
+      - name: "name"
+        description: "provider 名称"
+      - name: "tier"
+        description: "要设置的 tier (full/active/block)，不填则查询"
+    options: []
+  - name: "fallback"
+    domain: "provider"
+    entry: "commands/fallback.el"
+    description: "设置 fallback 策略"
+    args:
+      - name: "order"
+        description: "fallback 顺序，空格分隔的 provider 名称"
+    options:
+      - name: "--disable"
+        short: "-d"
+        type: "boolean"
+        default: false
+        description: "禁用 fallback"
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "JSON 格式输出"
+  - name: "fallback-order"
+    domain: "provider"
+    entry: "commands/fallback-order.el"
+    description: "查询或设置 fallback 顺序"
+    args:
+      - name: "order"
+        description: "fallback 顺序，空格分隔的 provider 名称，不填则查询"
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "JSON 格式输出"
+  - name: "audit"
+    domain: "provider"
+    entry: "commands/audit.el"
+    description: "查询 provider 审计日志"
+    args: []
+    options:
+      - name: "--limit"
+        short: "-l"
+        type: "number"
+        default: 20
+        description: "返回条数限制"
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "JSON 格式输出"
+  - name: "report"
+    domain: "provider"
+    entry: "commands/report.el"
+    description: "生成 provider 配置报告"
+    args: []
+    options:
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "JSON 格式输出"
+hooks: {}
+resources:
+  templates: []
+  schemas: []

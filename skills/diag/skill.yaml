@@ -1,0 +1,80 @@
+name: "diag"
+version: "1.0.2"
+description: "诊断技能：命令注册完整性检查、技能健康检查、版本漂移检查"
+author: "AIAOS Team"
+license: "MIT"
+category: "diagnostic"
+priority: 5
+dependencies:
+  core: ">=1.0.0"
+  skills: []
+  system: []
+commands:
+  - name: "check-registry"
+    domain: "diag"
+    entry: "commands/check-registry.el"
+    description: "扫描源码中定义的 aiaos-cli-<domain>-<verb> 函数，报告未注册到路由表的候选命令"
+    args: []
+    options:
+      - name: "--verbose"
+        short: "-v"
+        type: "boolean"
+        default: false
+        description: "详细模式：列出所有候选函数（含 helper）"
+      - name: "--strict"
+        short: "-s"
+        type: "boolean"
+        default: false
+        description: "严格模式：任何未注册候选都视为失败"
+      - name: "--path"
+        short: "-p"
+        type: "string"
+        default: ""
+        description: "扫描目录（默认使用 aiaos-cli lisp 目录）"
+  - name: "check-version"
+    domain: "diag"
+    entry: "commands/check-version.el"
+    description: "扫描源码中硬编码版本号，与 VERSION 文件比对，报告漂移"
+    args: []
+    options:
+      - name: "--verbose"
+        short: "-v"
+        type: "boolean"
+        default: false
+        description: "详细模式"
+      - name: "--strict"
+        short: "-s"
+        type: "boolean"
+        default: false
+        description: "严格模式：任何漂移都视为失败"
+      - name: "--path"
+        short: "-p"
+        type: "string"
+        default: ""
+        description: "扫描目录"
+  - name: "skill-doctor"
+    domain: "diag"
+    entry: "commands/skill-doctor.el"
+    description: "技能健康检查：元数据完整性 + entry 文件存在 + 命令注册一致性 + 未加载技能发现"
+    args: []
+    options:
+      - name: "--strict"
+        short: "-s"
+        type: "boolean"
+        default: false
+        description: "严格模式：任何 warning 视为失败"
+      - name: "--json"
+        short: "-j"
+        type: "boolean"
+        default: false
+        description: "JSON 格式输出"
+      - name: "--name"
+        short: "-n"
+        type: "string"
+        default: ""
+        description: "仅检查指定技能（预留）"
+
+hooks: {}
+resources:
+  templates: []
+  schemas: []

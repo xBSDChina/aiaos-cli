@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# aiaos-cli - command line wrapper for the aiaos-cli Emacs package.
+# Usage: aiaos-cli [--json] <command> [args...]
+#
+# Notes:
+#   - Passes argv as JSON via AIAOS_CLI_ARGS_JSON env var so Emacs can
+#     parse it with json-read-from-string (Emacs 27+).
+#   - `--json' / `--no-json' are consumed here and surfaced to Emacs
+#     through AIAOS_CLI_JSON so Emacs never sees them as unknown
+#     command-line options (R570 fix).
+#   - `--help' / `-h' / `--version' are handled here and never reach Emacs.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+JSON_MODE="f"
+FILTERED_ARGS=()
+
+for arg in "$@"; do
+  case "$arg" in
+    --json)       JSON_MODE="t" ;;
+    --no-json)    JSON_MODE="f" ;;
+    --help|-h)
+      cat <<'HELP'
+aiaos-cli - AIAOS Framework Command Line Interface
+
+Usage: aiaos-cli [--json] <command> [args...]
+
+Global options:
+  --json        Output JSON
+  --no-json     Output human-readable text (default)
+  --help, -h    Show this help
+  --version     Show version
+
+Commands:
+  system_info check_cpu      CPU information
+  system_info check_memory   Memory information
+  system_info check_disk     Disk information
+  system_info check_os       OS information
+  system_info check_load     Load information
+  system_info check_net      Network information
+  skill list                 List skills
+  skill load <name>          Load skill
+  version                    Show version
+  help                       Show help
+
+Examples:
+  aiaos-cli system_info check_cpu
+  aiaos-cli --json system_info check_memory
+  aiaos-cli skill list
+HELP
+      exit 0
+      ;;
+    --version)
+      cat "$SCRIPT_DIR/VERSION"
+      exit 0
+      ;;
+    *) FILTERED_ARGS+=("$arg") ;;
+  esac
+done
+
+export AIAOS_CLI_SCRIPT_DIR="$SCRIPT_DIR"
+export AIAOS_CLI_JSON="$JSON_MODE"
+
+# Serialise argv as JSON so Emacs can read it back without shell escaping.
+ARGS_JSON="$({ python3 -c 'import sys,json; print(json.dumps(sys.argv[1:]))' "${FILTERED_ARGS[@]}"; })"
+export AIAOS_CLI_ARGS_JSON="$ARGS_JSON"
+
+EMACS_BIN="${EMACS_BIN:-emacs}"
+
+# Use a heredoc so the Lisp program can contain both single and double
+# quotes without shell escaping headaches.
+LISP_SRC="$(mktemp)"
+trap 'rm -f "$LISP_SRC"' EXIT
+cat > "$LISP_SRC" << LISP_EOF
+(load-file (expand-file-name "lisp/init.el" "$SCRIPT_DIR"))
+(setq command-line-args-left
+      (append (json-read-from-string (getenv "AIAOS_CLI_ARGS_JSON")) nil))
+(when (string= (or (getenv "AIAOS_CLI_JSON") "") "t")
+  (setq aiaos-cli--json-mode t))
+(aiaos-cli-main command-line-args-left)
+LISP_EOF
+
+# --no-site-file is the reliable switch (Emacs 30 still loads site-start.d
+# under -q alone). -Q would also disable user packages, which we do not want.
+# Override via AIAOS_CLI_EMACS_FLAGS if needed.
+DEFAULT_FLAGS="--no-site-file --batch"
+EMACS_FLAGS="${AIAOS_CLI_EMACS_FLAGS:-$DEFAULT_FLAGS}"
+
+# Expand EMACS_FLAGS + user argv into a single bash array. We still use
+# eval for the flags string (which may contain multiple tokens like
+# "emacs -Q"), but the user argv is appended as a proper array so
+# flags like --format / --output are never re-parsed by Emacs.
+EMACS_CMD=()
+eval "EMACS_CMD+=(\"$EMACS_BIN\" $EMACS_FLAGS)"
+EMACS_CMD+=(-L "$SCRIPT_DIR" -L "$SCRIPT_DIR/lisp" -L "$HOME/.emacs.d/elpa/yaml-1.2.4")
+# Prepend user argv BEFORE -l so command-line-1 sees them as non-option
+# arguments. command-line-args-left is overwritten in the Lisp source
+# anyway, but this keeps the argv clean and prevents Emacs from
+# treating --format as an unknown option.
+EMACS_CMD+=(-l "$LISP_SRC")
+"${EMACS_CMD[@]}"

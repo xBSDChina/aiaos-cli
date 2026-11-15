@@ -1,0 +1,52 @@
+name: "text-tools"
+version: "1.0.0"
+description: "AIAOS-CLI 文本处理技能包：大小写转换、词频统计等常用文本工具"
+author: "AIAOS Project"
+license: "MIT"
+keywords: ["text", "utils", "productivity"]
+
+dependencies:
+  core: ">=1.0.0"
+  skills: []
+  system:
+    - "emacs>=29"
+
+commands:
+  - name: "case"
+    entry: "commands/case.el"
+    description: "文本大小写转换 (upper|lower|title)"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待转换的文本"
+    options:
+      - name: "--mode"
+        short: "-m"
+        type: "string"
+        description: "转换模式 (upper|lower|title)"
+        default: "upper"
+
+  - name: "wordcount"
+    entry: "commands/wordcount.el"
+    description: "统计文本中单词/字符/行数"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待统计的文本"
+    options:
+      - name: "--split"
+        short: "-s"
+        type: "string"
+        description: "分词分隔符（默认空白）"
+        default: " "
+
+hooks:
+  pre-command: "hooks/pre-command.el"
+  post-command: "hooks/post-command.el"
+  on-load: "hooks/on-load.el"
+
+resources:
+  templates: []
+  schemas: []

@@ -1,0 +1,34 @@
+;;;; commands/uppercase.el --- text-tools: uppercase command -*- lexical-binding: t -*-
+
+;; Copyright (C) 2026 AIAOS Team
+;; Version: 1.0.0
+
+;;; Commentary:
+;; 将文本转换为大写。
+
+;;; Code:
+
+(require 'aiaos-cli-core)
+(require 'json)
+(require 'cl-lib)
+
+(defun aiaos-cli-skill-text-tools/uppercase (args _options _ctx)
+  "将文本转换为大写。
+ARGS 为 CLI 构建的扁平 plist，如 (:message \"Hello\")。"
+  (let* ((text (or (plist-get args :message) (plist-get args :text) ""))
+         (result (upcase text)))
+    (aiaos-cli--result-success
+     :data result
+     :skill "text-tools"
+     :command "uppercase")))
+
+(aiaos-cli-register-command
+ "text-tools" "uppercase"
+ #'aiaos-cli-skill-text-tools/uppercase
+ :description "将文本转换为大写"
+ :args '((:name "text" :type string :required t :description "要转换的文本"))
+ :options '()
+ :skill "text-tools")
+
+(provide 'aiaos-cli-skill-text-tools/commands/uppercase)
+;;; commands/uppercase.el ends here

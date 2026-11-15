@@ -1,0 +1,1013 @@
+;;; aiaos-cli.el --- AIAOS CLI for Emacs - Main Entry -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2024 AIAOS Team
+;; Author: AIAOS Team
+;; Version: 1.0.0
+;; Package-Requires: ((emacs "27.1"))
+;; Keywords: aiaos, cli, agent, llm
+
+;;; Commentary:
+
+;; AIAOS CLI for Emacs provides a comprehensive command-line interface
+;; for interacting with AIAOS agents and services. It supports all
+;; protocols, operation flows, message flows, command execution flows,
+;; and task iteration flows defined in the AIAOS framework.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'json)
+(require 'url)
+(require 's)
+(require 'seq)
+(require 'aiaos-cli-llm)
+
+(defgroup aiaos-cli nil
+  "AIAOS CLI for Emacs"
+  :group 'tools
+  :prefix "aiaos-cli-")
+
+(defcustom aiaos-cli-config-dir
+  (expand-file-name ".aiaos" user-emacs-directory)
+  "AIAOS CLI configuration directory."
+  :type 'directory
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-default-provider "openai"
+  "Default LLM provider."
+  :type 'string
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-temperature 0.7
+  "Temperature for LLM responses."
+  :type 'float
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-max-tokens 2048
+  "Maximum tokens for LLM responses."
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defvar aiaos-cli--buffer nil
+  "The AIAOS CLI buffer.")
+
+(defvar aiaos-cli--history nil
+  "Command history.")
+
+(defvar aiaos-cli--current-provider nil
+  "Currently active LLM provider.")
+
+(defvar aiaos-cli--context-stack '()
+  "Context stack for agent operations.")
+
+(defvar aiaos-cli--active-task nil
+  "Currently active task.")
+
+(defvar aiaos-cli--tasks nil
+  "Active tasks.")
+
+(defvar aiaos-cli--task-counter 0
+  "Task counter for unique IDs.")
+
+(defvar aiaos-cli--executions nil
+  "Command executions.")
+
+(defvar aiaos-cli--exec-id-counter 0
+  "Execution ID counter.")
+
+(defvar aiaos-cli--active-exec-id nil
+  "Currently active execution ID.")
+
+(defvar aiaos-cli--messages nil
+  "Message history.")
+
+(defvar aiaos-cli--conversations nil
+  "Conversation history.")
+
+(defvar aiaos-cli--active-conversation-id nil
+  "Currently active conversation ID.")
+
+(defvar aiaos-cli--protocols nil
+  "Registered AIAOS protocols.")
+
+(defvar aiaos-cli--active-protocols nil
+  "Currently active protocols.")
+
+(defvar aiaos-cli--providers nil
+  "Registered LLM providers.")
+
+(defvar aiaos-cli--message-flows nil
+  "Message flows.")
+
+
+;;; Main Entry Point
+
+(defun aiaos ()
+  "Start AIAOS CLI in a new buffer.
+
+This function initializes the AIAOS CLI environment and displays
+the interactive buffer where you can execute commands, manage tasks,
+and interact with LLM providers."
+  (interactive)
+  (let ((buffer-name "*AIAOS CLI*"))
+    (if (get-buffer buffer-name)
+        (switch-to-buffer buffer-name)
+      (with-current-buffer (get-buffer-create buffer-name)
+        (aiaos-cli-mode)
+        (erase-buffer)
+        (aiaos-cli--welcome-message)
+        (aiaos-cli--init-provider aiaos-cli-default-provider)
+        (aiaos-cli--init-protocols)
+        (goto-char (point-max))
+        (aiaos-cli--refresh-status)
+        (message "AIAOS CLI started. Use M-x aiaos to restart.")
+        (switch-to-buffer buffer-name)))))
+
+
+;;; AIAOS CLI Mode
+
+(define-minor-mode aiaos-cli-mode
+  "Major mode for AIAOS CLI interaction."
+  :lighter " AIAOS"
+  :keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") 'aiaos-cli--handle-enter)
+    (define-key map (kbd "C-c C-c") 'aiaos-cli--handle-enter)
+    (define-key map (kbd "C-c C-k") 'aiaos-cli--cancel)
+    (define-key map (kbd "C-c C-l") 'aiaos-cli--clear-buffer)
+    (define-key map (kbd "C-c C-h") 'aiaos-cli--help)
+    (define-key map (kbd "C-c C-p") 'aiaos-cli--list-providers)
+    (define-key map (kbd "C-c C-t") 'aiaos-cli--task-list)
+    (define-key map (kbd "C-c C-x") 'aiaos-cli--exec-list)
+    (define-key map (kbd "C-c C-m") 'aiaos-cli--list-conversations)
+    (define-key map (kbd "C-c C-r") 'aiaos-cli--protocol-status)
+    map))
+
+(defun aiaos-cli--handle-enter ()
+  "Handle Enter key press in AIAOS CLI buffer."
+  (interactive)
+  (let ((input (aiaos-cli--get-current-line)))
+    (when (and input (not (s-blank-p input)))
+      (aiaos-cli--process-command input)
+      (aiaos-cli--clear-current-line)
+      (aiaos-cli--refresh-status))))
+
+(defun aiaos-cli--cancel ()
+  "Cancel current operation."
+  (interactive)
+  (message "Operation cancelled")
+  (aiaos-cli--append-output "Operation cancelled.\n"))
+
+(defun aiaos-cli--clear-buffer ()
+  "Clear the AIAOS CLI buffer."
+  (interactive)
+  (erase-buffer)
+  (aiaos-cli--welcome-message)
+  (goto-char (point-max)))
+
+(defun aiaos-cli--help ()
+  "Display help message."
+  (interactive)
+  (aiaos-cli--append-output "AIAOS CLI Help:\n")
+  (aiaos-cli--append-output "Commands:\n")
+  (aiaos-cli--append-output "  /help        - Show this help message\n")
+  (aiaos-cli--append-output "  /llm         - Manage LLM providers\n")
+  (aiaos-cli--append-output "  /task        - Manage tasks\n")
+  (aiaos-cli--append-output "  /exec        - Execute commands\n")
+  (aiaos-cli--append-output "  /msg         - Send messages\n")
+  (aiaos-cli--append-output "  /protocol    - Manage protocols\n")
+  (aiaos-cli--append-output "  /clear       - Clear buffer\n")
+  (aiaos-cli--append-output "  /quit        - Exit AIAOS CLI\n")
+  (aiaos-cli--append-output "\nUse C-c C-c to execute, C-c C-k to cancel.\n"))
+
+
+;;; Input Handling
+
+(defun aiaos-cli--get-current-line ()
+  "Get the current line input."
+  (save-excursion
+    (goto-char (point-max))
+    (beginning-of-line)
+    (let ((start (point)))
+      (end-of-line)
+      (buffer-substring-no-properties start (point)))))
+
+(defun aiaos-cli--clear-current-line ()
+  "Clear the current input line."
+  (save-excursion
+    (goto-char (point-max))
+    (beginning-of-line)
+    (let ((start (point)))
+      (end-of-line)
+      (delete-region start (point)))))
+
+(defun aiaos-cli--append-output (&rest text)
+  "Append output text to the AIAOS CLI buffer."
+  (save-excursion
+    (goto-char (point-max))
+    (dolist (t text)
+      (insert t))
+    (newline)))
+
+(defun aiaos-cli--append-input (input)
+  "Append user input to the AIAOS CLI buffer."
+  (save-excursion
+    (goto-char (point-max))
+    (insert "> " input "\n")))
+
+
+;;; Command Processing
+
+(defun aiaos-cli--process-command (command)
+  "Process a command string."
+  (aiaos-cli--append-input command)
+  (cond
+    ((string= command "/help")
+     (aiaos-cli--help))
+    ((string-prefix-p "/llm " command)
+     (aiaos-cli--handle-llm-command (substring command 4)))
+    ((string= command "/llm")
+     (aiaos-cli--list-providers))
+    ((string-prefix-p "/task " command)
+     (aiaos-cli--handle-task-command (substring command 5)))
+    ((string= command "/task")
+     (aiaos-cli--task-list))
+    ((string-prefix-p "/exec " command)
+     (aiaos-cli--handle-exec-command (substring command 5)))
+    ((string= command "/exec")
+     (aiaos-cli--exec-list))
+    ((string-prefix-p "/msg " command)
+     (aiaos-cli--handle-msg-command (substring command 4)))
+    ((string= command "/msg")
+     (aiaos-cli--get-messages 10))
+    ((string-prefix-p "/protocol " command)
+     (aiaos-cli--handle-protocol-command (substring command 9)))
+    ((string= command "/protocol")
+     (aiaos-cli--list-protocols))
+    ((string= command "/clear")
+     (aiaos-cli--clear-buffer))
+    ((string= command "/quit")
+     (aiaos-cli--quit))
+    (t
+     (aiaos-cli--process-default-command command))))
+
+(defun aiaos-cli--handle-llm-command (arg)
+  "Handle /llm subcommands."
+  (cond
+    ((string-prefix-p "switch " arg)
+     (aiaos-cli--switch-provider (substring arg 7)))
+    ((string-prefix-p "list " arg)
+     (aiaos-cli--list-providers))
+    ((string-prefix-p "config " arg)
+     (aiaos-cli--configure-provider (substring arg 7)))
+    ((string-prefix-p "temp " arg)
+     (let ((temp (string-to-number (substring arg 5))))
+       (setq aiaos-cli--temperature temp)
+       (aiaos-cli--append-output (format "✓ Temperature set to %.1f" temp))))
+    ((string-prefix-p "tokens " arg)
+     (let ((tokens (string-to-number (substring arg 7))))
+       (setq aiaos-cli--max-tokens tokens)
+       (aiaos-cli--append-output (format "✓ Max tokens set to %d" tokens))))))
+
+(defun aiaos-cli--handle-task-command (arg)
+  "Handle /task subcommands."
+  (cond
+    ((string-prefix-p "create " arg)
+     (aiaos-cli--create-task (substring arg 7)))
+    ((string-prefix-p "start " arg)
+     (aiaos-cli--start-task (substring arg 6)))
+    ((string-prefix-p "complete " arg)
+     (aiaos-cli--complete-task (substring arg 9)))
+    ((string-prefix-p "cancel " arg)
+     (aiaos-cli--cancel-task (substring arg 7)))
+    ((string-prefix-p "show " arg)
+     (aiaos-cli--task-show (substring arg 5)))
+    ((string-prefix-p "list " arg)
+     (aiaos-cli--task-list))
+    ((string-prefix-p "delete " arg)
+     (aiaos-cli--task-delete (substring arg 7)))
+    ((string-prefix-p "step " arg)
+     (let ((parts (split-string arg " " t)))
+       (when (>= (length parts) 2)
+         (aiaos-cli--add-task-step (car (cdr parts)) (car parts)))))))
+
+(defun aiaos-cli--handle-exec-command (arg)
+  "Handle /exec subcommands."
+  (cond
+    ((string-prefix-p "async " arg)
+     (aiaos-cli--execute-with-async (substring arg 6)))
+    ((string-prefix-p "sync " arg)
+     (aiaos-cli--execute-with-sync (substring arg 5)))
+    ((string-prefix-p "list " arg)
+     (aiaos-cli--exec-list))
+    ((string-prefix-p "show " arg)
+     (aiaos-cli--exec-show (substring arg 5)))
+    ((string-prefix-p "cancel " arg)
+     (aiaos-cli--exec-cancel (substring arg 7)))
+    ((string-prefix-p "flow " arg)
+     (let ((flow-args (split-string arg " " t)))
+       (pcase (car flow-args)
+         ("start" (aiaos-cli--execution-flow-start (cadr flow-args)))
+         ("step" (aiaos-cli--execution-flow-step (caddr flow-args) (cadddr flow-args)))
+         ("complete" (aiaos-cli--execution-flow-complete (cadr flow-args))))))))
+
+(defun aiaos-cli--handle-msg-command (arg)
+  "Handle /msg subcommands."
+  (cond
+    ((string-prefix-p "send " arg)
+     (aiaos-cli--send-message (substring arg 5)))
+    ((string-prefix-p "receive " arg)
+     (aiaos-cli--receive-message (substring arg 8)))
+    ((string-prefix-p "start " arg)
+     (aiaos-cli--start-conversation (substring arg 6)))
+    ((string-prefix-p "switch " arg)
+     (aiaos-cli--switch-conversation (substring arg 7)))
+    ((string-prefix-p "end " arg)
+     (aiaos-cli--end-conversation))
+    ((string-prefix-p "list " arg)
+     (aiaos-cli--list-conversations))
+    ((string-prefix-p "show " arg)
+     (aiaos-cli--show-conversation (substring arg 5)))))
+
+(defun aiaos-cli--handle-protocol-command (arg)
+  "Handle /protocol subcommands."
+  (cond
+    ((string-prefix-p "register " arg)
+     (aiaos-cli--register-protocol (substring arg 9)))
+    ((string-prefix-p "unregister " arg)
+     (aiaos-cli--unregister-protocol (substring arg 10)))
+    ((string-prefix-p "activate " arg)
+     (aiaos-cli--activate-protocol (substring arg 9)))
+    ((string-prefix-p "deactivate " arg)
+     (aiaos-cli--deactivate-protocol (substring arg 11)))
+    ((string-prefix-p "call " arg)
+     (let ((args (split-string (substring arg 5) " " t)))
+       (aiaos-cli--protocol-call (car args) (cdr args))))
+    ((string-prefix-p "status " arg)
+     (aiaos-cli--protocol-status))))
+
+(defun aiaos-cli--process-default-command (command)
+  "Process a default command as an LLM query."
+  (aiaos-cli--append-output "Processing your query...\n")
+  (aiaos-cli--llm-query command))
+
+
+;;; LLM Provider Management
+
+(defun aiaos-cli--init-provider (provider-name)
+  "Initialize an LLM provider by name."
+  (pcase provider-name
+    ("openai" (aiaos-cli--init-openai-provider))
+    ("anthropic" (aiaos-cli--init-anthropic-provider))
+    ("google" (aiaos-cli--init-google-provider))
+    ("ollama" (aiaos-cli--init-ollama-provider))
+    (_ (error "Unknown provider: %s" provider-name))))
+
+(defun aiaos-cli--init-openai-provider ()
+  "Initialize OpenAI provider."
+  (setq aiaos-cli--providers
+        (append aiaos-cli--providers
+                (list (cons 'openai
+                            (list :name "OpenAI"
+                                  :api-key aiaos-cli-openai-api-key
+                                  :base-url "https://api.openai.com/v1"
+                                  :models '("gpt-4" "gpt-3.5-turbo" "gpt-4-turbo")))))))
+
+(defun aiaos-cli--init-anthropic-provider ()
+  "Initialize Anthropic provider."
+  (setq aiaos-cli--providers
+        (append aiaos-cli--providers
+                (list (cons 'anthropic
+                            (list :name "Anthropic"
+                                  :api-key aiaos-cli-anthropic-api-key
+                                  :base-url "https://api.anthropic.com/v1"
+                                  :models '("claude-3-opus" "claude-3-sonnet" "claude-2")))))))
+
+(defun aiaos-cli--init-google-provider ()
+  "Initialize Google provider."
+  (setq aiaos-cli--providers
+        (append aiaos-cli--providers
+                (list (cons 'google
+                            (list :name "Google"
+                                  :api-key aiaos-cli-google-api-key
+                                  :base-url "https://generativelanguage.googleapis.com/v1"
+                                  :models '("gemini-pro" "gemini-1.5-pro" "gemini-1.5-flash")))))))
+
+(defun aiaos-cli--init-ollama-provider ()
+  "Initialize Ollama provider."
+  (setq aiaos-cli--providers
+        (append aiaos-cli--providers
+                (list (cons 'ollama
+                            (list :name "Ollama"
+                                  :api-key nil
+                                  :base-url "http://localhost:11434"
+                                  :models '("llama2" "mistral" "gemma" "codellama")))))))
+
+(defun aiaos-cli--list-providers ()
+  "List all available LLM providers."
+  (interactive)
+  (aiaos-cli--append-output "Available LLM Providers:\n")
+  (aiaos-cli--append-output "  openai     - OpenAI GPT models\n")
+  (aiaos-cli--append-output "  anthropic  - Anthropic Claude models\n")
+  (aiaos-cli--append-output "  google     - Google Gemini models\n")
+  (aiaos-cli--append-output "  ollama     - Local Ollama models\n")
+  (aiaos-cli--append-output "\nUse /llm switch <provider> to change provider."))
+
+(defun aiaos-cli--switch-provider (provider-name)
+  "Switch to a different LLM provider."
+  (aiaos-cli--append-output (format "Switching to provider: %s\n" provider-name))
+  (aiaos-cli--init-provider provider-name)
+  (setq aiaos-cli--current-provider provider-name)
+  (aiaos-cli--append-output (format "✓ Now using %s provider\n" provider-name))
+  (aiaos-cli--refresh-status))
+
+(defun aiaos-cli--refresh-status ()
+  "Refresh the status line in the AIAOS CLI buffer."
+  (save-excursion
+    (goto-char (point-max))
+    (aiaos-cli--append-output (format "[Provider: %s | Temp: %.1f | Max Tokens: %d]"
+                                        aiaos-cli--current-provider
+                                        aiaos-cli--temperature
+                                        aiaos-cli--max-tokens))))
+
+(defun aiaos-cli--llm-query (query)
+  "Send a query to the current LLM provider."
+  (unless aiaos-cli--current-provider
+    (error "No provider initialized"))
+  
+  (let ((provider-info (cdr (assoc aiaos-cli--current-provider aiaos-cli--providers))))
+    (pcase aiaos-cli--current-provider
+      ("openai" (aiaos-cli--call-openai query provider-info))
+      ("anthropic" (aiaos-cli--call-anthropic query provider-info))
+      ("google" (aiaos-cli--call-google query provider-info))
+      ("ollama" (aiaos-cli--call-ollama query provider-info))
+      (_ (error "Unknown provider: %s" aiaos-cli--current-provider)))))
+
+(defun aiaos-cli--call-openai (query provider-info)
+  "Call OpenAI API."
+  (let* ((api-key (plist-get provider-info :api-key))
+         (base-url (plist-get provider-info :base-url))
+         (model (or aiaos-cli--model "gpt-3.5-turbo"))
+         (url (format "%s/chat/completions" base-url))
+         (headers `(("Content-Type" . "application/json")
+                    ("Authorization" . ,(format "Bearer %s" api-key))))
+         (data `(("model" . ,model)
+                 ("messages" . ((list :role "user" :content ,query)))
+                 ("temperature" . ,aiaos-cli--temperature)
+                 ("max_tokens" . ,aiaos-cli--max-tokens))))
+    (aiaos-cli--make-api-request url headers data)))
+
+(defun aiaos-cli--call-anthropic (query provider-info)
+  "Call Anthropic API."
+  (let* ((api-key (plist-get provider-info :api-key))
+         (base-url (plist-get provider-info :base-url))
+         (model (or aiaos-cli--model "claude-3-haiku"))
+         (url (format "%s/messages" base-url))
+         (headers `(("Content-Type" . "application/json")
+                    ("x-api-key" . ,api-key)
+                    ("anthropic-version" . "2023-06-01")))
+         (data `(("model" . ,model)
+                 ("messages" . ((list :role "user" :content ,query)))
+                 ("max_tokens" . ,aiaos-cli--max-tokens)
+                 ("temperature" . ,aiaos-cli--temperature))))
+    (aiaos-cli--make-api-request url headers data)))
+
+(defun aiaos-cli--call-google (query provider-info)
+  "Call Google API."
+  (let* ((api-key (plist-get provider-info :api-key))
+         (base-url (plist-get provider-info :base-url))
+         (model (or aiaos-cli--model "gemini-pro"))
+         (url (format "%s/models/%s:generateContent?key=%s" base-url model api-key))
+         (data `(("contents" . ((list :parts . ((list :text . ,query))))))))
+    (aiaos-cli--make-api-request url nil data)))
+
+(defun aiaos-cli--call-ollama (query provider-info)
+  "Call Ollama API."
+  (let* ((base-url (plist-get provider-info :base-url))
+         (model (or aiaos-cli--model "llama2"))
+         (url (format "%s/api/generate" base-url))
+         (data `(("model" . ,model)
+                 ("prompt" . ,query)
+                 ("stream" . nil)
+                 ("temperature" . ,aiaos-cli--temperature)
+                 ("num_predict" . ,aiaos-cli--max-tokens))))
+    (aiaos-cli--make-api-request url nil data)))
+
+(defun aiaos-cli--make-api-request (url headers data)
+  "Make an API request to the given URL."
+  (let* ((json-data (json-encode data))
+         (response (url-retrieve-synchronously url
+                                              :request-method "POST"
+                                              :headers headers
+                                              :noquery t
+                                              :type 'json
+                                              :data json-data)))
+    (if (stringp response)
+        (progn
+          (json-parse-string response :object-type 'alist)
+          (aiaos-cli--parse-api-response response))
+      (error "API request failed"))))
+
+(defun aiaos-cli--parse-api-response (response)
+  "Parse the API response and extract the message content."
+  (let ((parsed (json-parse-string response :object-type 'alist)))
+    (pcase aiaos-cli--current-provider
+      ("openai" (cdr (assoc 'choices parsed)))
+      ("anthropic" (cdr (assoc 'content parsed)))
+      ("google" (cdr (assoc 'candidates parsed)))
+      ("ollama" (cdr (assoc 'response parsed)))
+      (_ (error "Unknown provider: %s" aiaos-cli--current-provider)))))
+
+
+;;; Task Management
+
+(defun aiaos-cli--create-task (title &optional description)
+  "Create a new task with TITLE and optional DESCRIPTION."
+  (setq aiaos-cli--task-counter (1+ aiaos-cli--task-counter))
+  (let* ((task-id (format "task-%d" aiaos-cli--task-counter))
+         (task (list :id task-id
+                     :title title
+                     :description description
+                     :status "pending"
+                     :progress 0
+                     :created-at (current-time)
+                     :steps nil
+                     :iterations 0)))
+    (push task aiaos-cli--tasks)
+    (aiaos-cli--append-output (format "✓ Task created: %s (ID: %s)" title task-id))
+    task))
+
+(defun aiaos-cli--start-task (task-id)
+  "Start a task by ID."
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (setf (alist-get :status task) "running")
+          (setf (alist-get :progress task) 10)
+          (aiaos-cli--append-output (format "✓ Task started: %s" task-id))
+          (setq aiaos-cli--active-task-id task-id))
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--complete-task (task-id)
+  "Complete a task by ID."
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (setf (alist-get :status task) "completed")
+          (setf (alist-get :progress task) 100)
+          (aiaos-cli--append-output (format "✓ Task completed: %s" task-id))
+          (when (eq aiaos-cli--active-task-id task-id)
+            (setq aiaos-cli--active-task-id nil))
+          task)
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--cancel-task (task-id)
+  "Cancel a task by ID."
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (setf (alist-get :status task) "cancelled")
+          (aiaos-cli--append-output (format "✗ Task cancelled: %s" task-id))
+          (when (eq aiaos-cli--active-task-id task-id)
+            (setq aiaos-cli--active-task-id nil))
+          task)
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--find-task (task-id)
+  "Find a task by ID."
+  (seq-find (lambda (task) (eq (alist-get :id task) task-id)) aiaos-cli--tasks))
+
+(defun aiaos-cli--task-list ()
+  "List all tasks."
+  (interactive)
+  (aiaos-cli--append-output "=== Task List ===")
+  (dolist (task aiaos-cli--tasks)
+    (let ((status (alist-get :status task))
+          (progress (alist-get :progress task))
+          (title (alist-get :title task))
+          (id (alist-get :id task)))
+      (aiaos-cli--append-output (format "  [%s] %s (%s) - %d%%" id title status progress)))))
+
+(defun aiaos-cli--task-show (task-id)
+  "Show detailed information about a task."
+  (interactive)
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (aiaos-cli--append-output (format "=== Task: %s ===" (alist-get :title task)))
+          (aiaos-cli--append-output (format "ID: %s" (alist-get :id task)))
+          (aiaos-cli--append-output (format "Status: %s" (alist-get :status task)))
+          (aiaos-cli--append-output (format "Progress: %d%%" (alist-get :progress task)))
+          (aiaos-cli--append-output (format "Created: %s" (format-time-string "%Y-%m-%d %H:%M:%S" (alist-get :created-at task)))))
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--task-delete (task-id)
+  "Delete a task."
+  (interactive)
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (setq aiaos-cli--tasks (remove task aiaos-cli--tasks))
+          (when (eq aiaos-cli--active-task-id task-id)
+            (setq aiaos-cli--active-task-id nil))
+          (aiaos-cli--append-output (format "✓ Task deleted: %s" task-id)))
+      (error "Task not found: %s" task-id))))
+
+(defun aiaos-cli--add-task-step (task-id step-title)
+  "Add a step to a task."
+  (let ((task (aiaos-cli--find-task task-id)))
+    (if task
+        (progn
+          (let ((step (list :title step-title :status "pending" :created-at (current-time))))
+            (push step (alist-get :steps task))
+            (aiaos-cli--append-output (format "✓ Step added to task %s: %s" task-id step-title)))
+          task)
+      (error "Task not found: %s" task-id))))
+
+
+;;; Command Execution
+
+(defun aiaos-cli--execute-with-async (command)
+  "Execute a command asynchronously and track execution."
+  (setq aiaos-cli--exec-id-counter (1+ aiaos-cli--exec-id-counter))
+  (let* ((exec-id (format "exec-%d" aiaos-cli--exec-id-counter))
+         (exec-info (list :id exec-id
+                          :command command
+                          :status "running"
+                          :start-time (current-time)
+                          :output ""
+                          :exit-code nil)))
+    (push exec-info aiaos-cli--executions)
+    (aiaos-cli--append-output (format "✓ Starting execution: %s (ID: %s)" command exec-id))
+    (setq aiaos-cli--active-exec-id exec-id)
+    (aiaos-cli--execute-command command)))
+
+(defun aiaos-cli--execute-with-sync (command)
+  "Execute a command synchronously and return output."
+  (let ((result (shell-command-to-string command)))
+    (aiaos-cli--append-output (format "Command output:\n%s" result))
+    result))
+
+(defun aiaos-cli--execute-command (command &optional output-fn)
+  "Execute a shell command and return output."
+  (let* ((output (make-string 0 ?\0))
+         (proc (start-process "aiaos-exec" nil "sh" "-c" command))
+         (result nil)
+         (exit-code nil))
+    
+    (set-process-sentinel proc
+                          (lambda (process event)
+                            (when (eq (process-status process) 'exit)
+                              (setq exit-code (process-exit-status process))
+                              (setq result (get-buffer-string (process-buffer process)))
+                              (if (and output-fn (functionp output-fn))
+                                  (funcall output-fn result exit-code)
+                                (aiaos-cli--append-output result))
+                              (kill-buffer (process-buffer process))
+                              (when aiaos-cli--active-exec-id
+                                (setf (alist-get :status (alist-get aiaos-cli--active-exec-id aiaos-cli--executions)) "completed")
+                                (setf (alist-get :exit-code (alist-get aiaos-cli--active-exec-id aiaos-cli--executions)) exit-code)
+                                (setq aiaos-cli--active-exec-id nil)))))
+    
+    (when aiaos-cli--active-exec-id
+      (setf (alist-get :status (alist-get aiaos-cli--active-exec-id aiaos-cli--executions)) "running"))
+    
+    (sleep-for 0.1)
+    (list :command command :output result :exit-code exit-code)))
+
+(defun aiaos-cli--exec-list ()
+  "List all command executions."
+  (interactive)
+  (aiaos-cli--append-output "=== Command Execution History ===")
+  (dolist (exec (seq-take aiaos-cli--executions 20))
+    (let ((id (alist-get :id exec))
+          (cmd (alist-get :command exec))
+          (status (alist-get :status exec))
+          (exit-code (alist-get :exit-code exec)))
+      (aiaos-cli--append-output (format "  [%s] %s - Status: %s, Exit: %s" id (substring cmd 0 (min 50 (length cmd))) status exit-code)))))
+
+(defun aiaos-cli--exec-show (exec-id)
+  "Show details of a command execution."
+  (interactive)
+  (let ((exec (aiaos-cli--find-exec exec-id)))
+    (if exec
+        (progn
+          (aiaos-cli--append-output (format "=== Execution: %s ===" exec-id))
+          (aiaos-cli--append-output (format "Command: %s" (alist-get :command exec)))
+          (aiaos-cli--append-output (format "Status: %s" (alist-get :status exec)))
+          (aiaos-cli--append-output (format "Exit Code: %s" (alist-get :exit-code exec)))
+          (aiaos-cli--append-output (format "Started: %s" (format-time-string "%Y-%m-%d %H:%M:%S" (alist-get :start-time exec))))
+          (when (alist-get :output exec)
+            (aiaos-cli--append-output "Output:")
+            (aiaos-cli--append-output (alist-get :output exec)))
+          (when (alist-get :error exec)
+            (aiaos-cli--append-output "Error:")
+            (aiaos-cli--append-output (alist-get :error exec)))
+          exec)
+      (error "Execution not found: %s" exec-id))))
+
+(defun aiaos-cli--exec-cancel (exec-id)
+  "Cancel a running command execution."
+  (interactive)
+  (let ((exec (aiaos-cli--find-exec exec-id)))
+    (if exec
+        (progn
+          (when (eq (alist-get :status exec) "running")
+            (delete-process (alist-get :process exec))
+            (setf (alist-get :status exec) "cancelled")
+            (aiaos-cli--append-output (format "✗ Execution cancelled: %s" exec-id)))
+          (when (eq aiaos-cli--active-exec-id exec-id)
+            (setq aiaos-cli--active-exec-id nil)))
+      (error "Execution not found: %s" exec-id))))
+
+(defun aiaos-cli--find-exec (exec-id)
+  "Find an execution by ID."
+  (seq-find (lambda (exec) (eq (alist-get :id exec) exec-id)) aiaos-cli--executions))
+
+
+;;; Message Flow
+
+(defun aiaos-cli--send-message (content &optional role)
+  "Send a message with optional role."
+  (let ((message (list :id (format "msg-%d" (length aiaos-cli--messages))
+                       :content content
+                       :role (or role "user")
+                       :timestamp (current-time))))
+    (push message aiaos-cli--messages)
+    (when aiaos-cli--active-conversation-id
+      (push message (alist-get aiaos-cli--active-conversation-id aiaos-cli--conversations)))
+    (aiaos-cli--append-output (format "[%s] %s" (alist-get :role message) content))
+    message))
+
+(defun aiaos-cli--receive-message (content &optional role)
+  "Receive a message from the system/agent."
+  (let ((message (list :id (format "msg-%d" (length aiaos-cli--messages))
+                       :content content
+                       :role (or role "assistant")
+                       :timestamp (current-time))))
+    (push message aiaos-cli--messages)
+    (when aiaos-cli--active-conversation-id
+      (push message (alist-get aiaos-cli--active-conversation-id aiaos-cli--conversations)))
+    (aiaos-cli--append-output (format "[%s] %s" (alist-get :role message) content))
+    message))
+
+(defun aiaos-cli--get-messages (&optional limit)
+  "Get recent messages."
+  (seq-take (nreverse aiaos-cli--messages) limit))
+
+(defun aiaos-cli--start-conversation (name)
+  "Start a new conversation."
+  (interactive)
+  (setq aiaos-cli--active-conversation-id (format "conv-%d" (length aiaos-cli--conversations)))
+  (let ((conversation (list :id aiaos-cli--active-conversation-id
+                            :name name
+                            :messages nil
+                            :created-at (current-time))))
+    (push conversation aiaos-cli--conversations)
+    (aiaos-cli--append-output (format "✓ Started new conversation: %s (ID: %s)" name aiaos-cli--active-conversation-id))
+    conversation))
+
+(defun aiaos-cli--switch-conversation (conv-id)
+  "Switch to a different conversation."
+  (interactive)
+  (if (aiaos-cli--find-conversation conv-id)
+      (progn
+        (setq aiaos-cli--active-conversation-id conv-id)
+        (aiaos-cli--append-output (format "✓ Switched to conversation: %s" conv-id))
+        (aiaos-cli--show-conversation conv-id))
+    (error "Conversation not found: %s" conv-id)))
+
+(defun aiaos-cli--end-conversation ()
+  "End the current conversation."
+  (interactive)
+  (when aiaos-cli--active-conversation-id
+    (aiaos-cli--append-output (format "✓ Ended conversation: %s" aiaos-cli--active-conversation-id))
+    (setq aiaos-cli--active-conversation-id nil)))
+
+(defun aiaos-cli--list-conversations ()
+  "List all conversations."
+  (interactive)
+  (aiaos-cli--append-output "=== Conversation List ===")
+  (dolist (conv aiaos-cli--conversations)
+    (let ((id (alist-get :id conv))
+          (name (alist-get :name conv))
+          (msg-count (length (alist-get :messages conv))))
+      (aiaos-cli--append-output (format "  [%s] %s (%d messages)" id name msg-count)))))
+
+(defun aiaos-cli--show-conversation (conv-id)
+  "Show messages in a conversation."
+  (interactive)
+  (let ((conv (aiaos-cli--find-conversation conv-id)))
+    (if conv
+        (progn
+          (aiaos-cli--append-output (format "=== Conversation: %s ===" (alist-get :name conv)))
+          (dolist (msg (alist-get :messages conv))
+            (aiaos-cli--append-output (format "[%s] %s" (alist-get :role msg) (alist-get :content msg))))
+          conv)
+      (error "Conversation not found: %s" conv-id))))
+
+(defun aiaos-cli--find-conversation (conv-id)
+  "Find a conversation by ID."
+  (seq-find (lambda (conv) (eq (alist-get :id conv) conv-id)) aiaos-cli--conversations))
+
+
+;;; Protocol Management
+
+(defun aiaos-cli--init-protocols ()
+  "Initialize default AIAOS protocols."
+  (aiaos-cli--register-protocol "http" "HTTP/HTTPS Protocol")
+  (aiaos-cli--register-protocol "mqtt" "MQTT Protocol")
+  (aiaos-cli--register-protocol "websocket" "WebSocket Protocol")
+  (aiaos-cli--register-protocol "grpc" "gRPC Protocol")
+  (aiaos-cli--register-protocol "tcp" "TCP Protocol")
+  (aiaos-cli--register-protocol "udp" "UDP Protocol"))
+
+(defun aiaos-cli--register-protocol (protocol-name &optional protocol-desc)
+  "Register a new AIAOS protocol."
+  (let ((protocol (list :name protocol-name
+                        :description (or protocol-desc (format "Protocol: %s" protocol-name))
+                        :status "registered"
+                        :version "1.0.0")))
+    (push protocol aiaos-cli--protocols)
+    (aiaos-cli--append-output (format "✓ Protocol registered: %s" protocol-name))
+    protocol))
+
+(defun aiaos-cli--unregister-protocol (protocol-name)
+  "Unregister a protocol."
+  (interactive)
+  (let ((protocol (seq-find (lambda (p) (eq (alist-get :name p) protocol-name)) aiaos-cli--protocols)))
+    (if protocol
+        (progn
+          (setq aiaos-cli--protocols (remove protocol aiaos-cli--protocols))
+          (aiaos-cli--append-output (format "✗ Protocol unregistered: %s" protocol-name)))
+      (error "Protocol not found: %s" protocol-name))))
+
+(defun aiaos-cli--activate-protocol (protocol-name)
+  "Activate a protocol."
+  (interactive)
+  (let ((protocol (seq-find (lambda (p) (eq (alist-get :name p) protocol-name)) aiaos-cli--protocols)))
+    (if protocol
+        (progn
+          (setf (alist-get :status protocol) "active")
+          (push protocol-name aiaos-cli--active-protocols)
+          (aiaos-cli--append-output (format "✓ Protocol activated: %s" protocol-name)))
+      (error "Protocol not found: %s" protocol-name))))
+
+(defun aiaos-cli--deactivate-protocol (protocol-name)
+  "Deactivate a protocol."
+  (interactive)
+  (let ((protocol (seq-find (lambda (p) (eq (alist-get :name p) protocol-name)) aiaos-cli--protocols)))
+    (if protocol
+        (progn
+          (setf (alist-get :status protocol) "inactive")
+          (setq aiaos-cli--active-protocols (remove protocol-name aiaos-cli--active-protocols))
+          (aiaos-cli--append-output (format "✗ Protocol deactivated: %s" protocol-name)))
+      (error "Protocol not found: %s" protocol-name))))
+
+(defun aiaos-cli--list-protocols ()
+  "List all registered protocols."
+  (interactive)
+  (aiaos-cli--append-output "=== AIAOS Protocols ===")
+  (dolist (protocol aiaos-cli--protocols)
+    (let ((name (alist-get :name protocol))
+          (desc (alist-get :description protocol))
+          (status (alist-get :status protocol)))
+      (aiaos-cli--append-output (format "  [%s] %s - %s" status name desc)))))
+
+(defun aiaos-cli--protocol-call (protocol-name &rest args)
+  "Call a protocol with arguments."
+  (interactive)
+  (let ((protocol (seq-find (lambda (p) (eq (alist-get :name p) protocol-name)) aiaos-cli--protocols)))
+    (if protocol
+        (progn
+          (aiaos-cli--append-output (format "Calling protocol %s with args: %s" protocol-name args))
+          (pcase protocol-name
+            ("http" (aiaos-cli--protocol-http-call args))
+            ("mqtt" (aiaos-cli--protocol-mqtt-call args))
+            ("websocket" (aiaos-cli--protocol-websocket-call args))
+            ("grpc" (aiaos-cli--protocol-grpc-call args))
+            ("tcp" (aiaos-cli--protocol-tcp-call args))
+            ("udp" (aiaos-cli--protocol-udp-call args))
+            (_ (error "Unknown protocol: %s" protocol-name))))
+      (error "Protocol not found: %s" protocol-name))))
+
+(defun aiaos-cli--protocol-http-call (args)
+  "HTTP protocol call."
+  (let ((url (car args))
+        (method (or (cadr args) "GET"))
+        (headers (or (caddr args) nil))
+        (body (or (cadddr args) nil)))
+    (aiaos-cli--append-output (format "HTTP %s %s" method url))
+    (url-retrieve-synchronously url
+                                :request-method method
+                                :headers headers
+                                :noquery t
+                                :data body)))
+
+(defun aiaos-cli--protocol-mqtt-call (args)
+  "MQTT protocol call."
+  (let ((host (car args))
+        (port (or (cadr args) 1883))
+        (topic (caddr args))
+        (message (cadddr args))
+        (qos (or (car (cddddr args)) 0)))
+    (aiaos-cli--append-output (format "MQTT publish %s to %s:%d" message topic port))
+    (message "MQTT protocol not yet implemented")))
+
+(defun aiaos-cli--protocol-websocket-call (args)
+  "WebSocket protocol call."
+  (let ((url (car args))
+        (message (cadr args))
+        (on-open (or (caddr args) nil))
+        (on-message (or (cadddr args) nil))
+        (on-close (or (car (cddddr args)) nil)))
+    (aiaos-cli--append-output (format "WebSocket connect %s" url))
+    (message "WebSocket protocol not yet implemented")))
+
+(defun aiaos-cli--protocol-grpc-call (args)
+  "gRPC protocol call."
+  (let ((service (car args))
+        (method (cadr args))
+        (message (caddr args)))
+    (aiaos-cli--append-output (format "gRPC call %s.%s" service method))
+    (message "gRPC protocol not yet implemented")))
+
+(defun aiaos-cli--protocol-tcp-call (args)
+  "TCP protocol call."
+  (let ((host (car args))
+        (port (cadr args))
+        (message (caddr args)))
+    (aiaos-cli--append-output (format "TCP connect %s:%d send '%s'" host port message))
+    (message "TCP protocol not yet implemented")))
+
+(defun aiaos-cli--protocol-udp-call (args)
+  "UDP protocol call."
+  (let ((host (car args))
+        (port (cadr args))
+        (message (caddr args)))
+    (aiaos-cli--append-output (format "UDP send %s:%d '%s'" host port message))
+    (message "UDP protocol not yet implemented")))
+
+(defun aiaos-cli--protocol-status ()
+  "Get status of all protocols."
+  (interactive)
+  (aiaos-cli--append-output "=== Protocol Status ===")
+  (dolist (protocol aiaos-cli--protocols)
+    (let ((name (alist-get :name protocol))
+          (status (alist-get :status protocol))
+          (active (member name aiaos-cli--active-protocols)))
+      (aiaos-cli--append-output (format "  %s: %s%s" name status (if active " [active]" ""))))))
+
+
+;;; Welcome Message
+
+(defun aiaos-cli--welcome-message ()
+  "Display enhanced welcome message."
+  (insert "================================================================================\n")
+  (insert "                    AIAOS CLI for Emacs v1.0.0\n")
+  (insert "================================================================================\n")
+  (insert "\n")
+  (insert "Welcome to AIAOS CLI - The Ultimate Agent Interface for Emacs\n")
+  (insert "\n")
+  (insert "This client provides full support for all AIAOS protocols, operations,\n")
+  (insert "message flows, command execution flows, and task iteration flows.\n")
+  (insert "\n")
+  (insert "Quick Start:\n")
+  (insert "  1. Send a message to the LLM (just type and press Enter)\n")
+  (insert "  2. Use /help to see all available commands\n")
+  (insert "  3. Manage tasks, execute commands, and handle protocols\n")
+  (insert "\n")
+  (insert "Available Modules:\n")
+  (insert "  • LLM Providers: OpenAI, Anthropic, Google, Ollama\n")
+  (insert "  • Task Management: Create, start, complete, cancel tasks\n")
+  (insert "  • Command Execution: Async/sync command execution\n")
+  (insert "  • Message Flows: Conversations and messaging\n")
+  (insert "  • Protocol Support: HTTP, MQTT, WebSocket, gRPC, TCP, UDP\n")
+  (insert "\n")
+  (insert "Commands:\n")
+  (insert "  /help        - Show this help message\n")
+  (insert "  /llm         - Manage LLM providers\n")
+  (insert "  /task        - Manage tasks\n")
+  (insert "  /exec        - Execute commands\n")
+  (insert "  /msg         - Send messages\n")
+  (insert "  /protocol    - Manage protocols\n")
+  (insert "  /clear       - Clear buffer\n")
+  (insert "  /quit        - Exit AIAOS CLI\n")
+  (insert "\n")
+  (insert "Use C-c C-c to execute, C-c C-k to cancel.\n")
+  (insert "================================================================================\n\n")
+  (insert "Ready. Type your command or question below:\n")
+  (insert "-----------------------------------------------------------------------------\n"))
+
+
+;;; Quit
+
+(defun aiaos-cli--quit ()
+  "Exit AIAOS CLI."
+  (interactive)
+  (aiaos-cli--append-output "Goodbye! AIAOS CLI exited.")
+  (delete-buffer)
+  (message "AIAOS CLI exited."))
+
+(provide 'aiaos-cli)
+;;; aiaos-cli.el ends here

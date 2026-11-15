@@ -1,0 +1,816 @@
+;;; aiaos-cli.el --- AIAOS CLI for Emacs -*- lexical-binding: t -*-
+
+;; Version: 6.0.0 (Enterprise: streaming, tool_calls, agent loop, file ops)
+
+(require 'json)
+(require 'cl-lib)
+
+;; ─── Utilities ───────────────────────────────────────────────────────────────
+
+(defun aiaos-cli--trim (str)
+  "Return STR with leading and trailing whitespace removed."
+  (string-trim str))
+
+(defun aiaos-cli--json-file-to-elisp (path)
+  "Parse JSON file at PATH and return Elisp data with hash tables."
+  (with-temp-buffer
+    (insert-file-contents path)
+    (json-parse-string (buffer-string)
+                       :object-type 'hash-table
+                       :array-type 'list
+                       :null-object 'nil
+                       :false-object 'nil)))
+
+(defun aiaos-cli--json-string-to-elisp (text)
+  "Parse JSON TEXT and return Elisp data with hash tables."
+  (json-parse-string text
+                     :object-type 'hash-table
+                     :array-type 'list
+                     :null-object 'nil
+                     :false-object 'nil))
+
+(defun aiaos-cli--json-get-model-id (model-entry)
+  "Return model id from JSON model ENTRY."
+  (if (hash-table-p model-entry)
+      (or (gethash "id" model-entry)
+          (gethash "name" model-entry))
+    (if (listp model-entry)
+        (plist-get model-entry :id)
+      (if (stringp model-entry) model-entry nil))))
+
+(defun aiaos-cli--safe-puthash (ht key val)
+  "Put KEY->VAL into hash-table HT only when VAL is non-nil."
+  (when val (puthash key val ht)))
+
+;; ─── Configuration ───────────────────────────────────────────────────────────
+
+(defcustom aiaos-cli-config-file "~/.openclaw/openclaw.json"
+  "Path to AIAOS configuration file."
+  :type 'file :group 'aiaos)
+
+(defcustom aiaos-cli-timeout 120
+  "Timeout in seconds for LLM requests."
+  :type 'integer :group 'aiaos)
+
+(defcustom aiaos-cli-max-retry 2
+  "Maximum retry attempts per provider."
+  :type 'integer :group 'aiaos)
+
+(defcustom aiaos-cli-default-provider "sensenova"
+  "Default provider name."
+  :type 'string :group 'aiaos)
+
+(defcustom aiaos-cli-temperature 0.7
+  "LLM temperature."
+  :type 'float :group 'aiaos)
+
+(defcustom aiaos-cli-max-tokens 4096
+  "Maximum tokens in response."
+  :type 'integer :group 'aiaos)
+
+(defcustom aiaos-cli-system-prompt "You are a helpful AI assistant running in Emacs with file and shell access."
+  "System prompt for the LLM."
+  :type 'string :group 'aiaos)
+
+(defcustom aiaos-cli-enable-tools t
+  "Enable tool calling (read_file, write_file, execute_command, list_files)."
+  :type 'boolean :group 'aiaos)
+
+(defcustom aiaos-cli-enable-streaming t
+  "Enable SSE streaming for LLM responses."
+  :type 'boolean :group 'aiaos)
+
+(defcustom aiaos-cli-max-agent-steps 10
+  "Maximum tool-call iterations per user message."
+  :type 'integer :group 'aiaos)
+
+(defcustom aiaos-cli-show-tokens t
+  "Show token usage in output."
+  :type 'boolean :group 'aiaos)
+
+(defcustom aiaos-cli-error-log-file "~/.openclaw/error-log.txt"
+  "Path to error log file."
+  :type 'file :group 'aiaos)
+
+(defcustom aiaos-cli-tool-allowlist nil
+  "List of allowed tool names. If nil, all tools are allowed."
+  :type 'list :group 'aiaos)
+
+;; ─── State ───────────────────────────────────────────────────────────────────
+
+(defvar aiaos-cli--providers nil)
+(defvar aiaos-cli--provider-order nil)
+(defvar aiaos-cli--current-provider-index 0)
+(defvar aiaos-cli--provider-stats '())
+(defvar aiaos-cli--error-log '())
+(defvar aiaos-cli--conversation '())
+(defvar aiaos-cli--llm-ready nil)
+(defvar-local aiaos-cli--input-start nil)
+(defvar-local aiaos-cli--mode-active nil)
+
+;; ─── Error Types ─────────────────────────────────────────────────────────────
+
+(define-error 'aiaos-cli-llm-error "LLM error")
+(define-error 'aiaos-cli-llm-timeout "LLM timeout")
+(define-error 'aiaos-cli-llm-auth "LLM authentication error")
+(define-error 'aiaos-cli-llm-rate-limit "LLM rate limit exceeded")
+(define-error 'aiaos-cli-llm-network "LLM network error")
+(define-error 'aiaos-cli-llm-server "LLM server error")
+
+;; ─── HTTP Client ─────────────────────────────────────────────────────────────
+
+(defun aiaos-cli--http-post (url api-key body-json timeout)
+  "Send HTTP POST request to URL with API-KEY and BODY-JSON via curl.
+Return response body string, or signal aiaos-cli-llm-error on non-2xx."
+  (let ((req-file (make-temp-file "aiaos-cli-req-"))
+        (resp-file (make-temp-file "aiaos-cli-resp-"))
+        (stdout-buf (get-buffer-create (generate-new-buffer-name "*aiaos-stdout*")))
+        (exit-code nil)
+        (http-code 0))
+    (with-temp-file req-file
+      (insert body-json))
+    (setq exit-code (call-process
+                      "curl" nil stdout-buf nil
+                      "-s" "-w" "%{http_code}"
+                      "--max-time" (number-to-string timeout)
+                      "-X" "POST"
+                      "-H" (format "Authorization: Bearer %s" api-key)
+                      "-H" "Content-Type: application/json"
+                      "-d" (concat "@" req-file)
+                      "-o" resp-file
+                      url))
+    (unwind-protect
+        (progn
+          (with-current-buffer stdout-buf
+            (setq http-code (string-to-number (buffer-string))))
+          (if (/= exit-code 0)
+              (signal 'aiaos-cli-llm-error
+                      (list (format "curl exited with code %d" exit-code)
+                            "network" "network"))
+            (if (>= http-code 400)
+                (with-temp-buffer
+                  (insert-file-contents resp-file)
+                  (signal 'aiaos-cli-llm-error
+                          (list (buffer-string)
+                                (format "http-%d" http-code)
+                                (format "http-%d" http-code))))
+              (with-temp-buffer
+                (insert-file-contents resp-file)
+                (buffer-string)))))
+      (kill-buffer stdout-buf)
+      (delete-file req-file)
+      (delete-file resp-file))))
+
+(defun aiaos-cli--http-post-stream (url api-key body-json timeout callback)
+  "Send HTTP POST with SSE streaming. CALLBACK called with each SSE data line."
+  (let ((req-file (make-temp-file "aiaos-cli-req-"))
+        (proc-buf (get-buffer-create (generate-new-buffer-name "*aiaos-stream*")))
+        (proc nil))
+    (with-temp-file req-file
+      (insert body-json))
+    (setq proc (start-process-shell-command
+                 "aiaos-stream" proc-buf
+                 (format "curl -s --max-time %d -X POST -H 'Authorization: Bearer %s' -H 'Content-Type: application/json' -d @%s %s 2>&1"
+                         timeout api-key req-file url)))
+    (unwind-protect
+        (while (process-live-p proc)
+          (accept-process-output (list proc) 0.5)
+          (when (buffer-size proc-buf)
+            (let ((data (with-current-buffer proc-buf
+                           (buffer-string))))
+              (with-current-buffer proc-buf
+                (delete-region (point-min) (point-max)))
+              (dolist (line (split-string data "\n"))
+                (when (string-prefix-p "data:" line)
+                  (let ((payload (aiaos-cli--trim (substring line 5))))
+                    (when (and (not (string-empty-p payload))
+                               (not (string= payload "[DONE]")))
+                      (funcall callback payload))))))))
+      (delete-file req-file)
+      (when (buffer-live-p proc-buf) (kill-buffer proc-buf)))))
+
+;; ─── Provider System ─────────────────────────────────────────────────────────
+
+(defun aiaos-cli--init-provider-system ()
+  "Initialize LLM provider system from configuration file."
+  (unless (file-exists-p aiaos-cli-config-file)
+    (user-error "Config file not found: %s" aiaos-cli-config-file))
+  (let* ((config (aiaos-cli--json-file-to-elisp aiaos-cli-config-file))
+         (models (gethash "models" config))
+         (providers-map (gethash "providers" (or models (make-hash-table))))
+         providers order)
+    (unless config
+      (user-error "Failed to parse config file: %s" aiaos-cli-config-file))
+    (when (hash-table-p providers-map)
+      (maphash (lambda (name model-cfg)
+                 (when (hash-table-p model-cfg)
+                   (let ((api-key (gethash "apiKey" model-cfg))
+                         (api-url (gethash "baseUrl" model-cfg))
+                         (models-list (gethash "models" model-cfg))
+                         (default-model (gethash "defaultModel" model-cfg)))
+                     (when (and api-key api-url)
+                       (push (list name
+                                   (list :api-key api-key
+                                         :api-url api-url
+                                         :default-model default-model
+                                         :models (or models-list
+                                                     (list default-model))))
+                             providers)
+                       (push name order)))))
+               providers-map))
+    (unless providers
+      (user-error "No providers configured. Check ~/.openclaw/openclaw.json"))
+    (setq aiaos-cli--providers providers)
+    (setq aiaos-cli--provider-order (nreverse order))
+    (setq aiaos-cli--current-provider-index 0)
+    (if (member aiaos-cli-default-provider aiaos-cli--provider-order)
+        (let ((i 0))
+          (while (and (< i (length aiaos-cli--provider-order))
+                      (not (string= (nth i aiaos-cli--provider-order)
+                                    aiaos-cli-default-provider)))
+            (setq i (1+ i)))
+          (when (string= (nth i aiaos-cli--provider-order)
+                         aiaos-cli-default-provider)
+            (setq aiaos-cli--current-provider-index i)))
+      (user-error (format "Default provider %s not found"
+                          aiaos-cli-default-provider)))
+    (setq aiaos-cli--llm-ready t)
+    (message "[AIAOS] Loaded %d providers, default: %s"
+             (length aiaos-cli--provider-order)
+             (nth aiaos-cli--current-provider-index aiaos-cli--provider-order))))
+
+(defun aiaos-cli--get-provider-config (provider-name)
+  "Get configuration for PROVIDER-NAME."
+  (cdr (assoc provider-name aiaos-cli--providers)))
+
+(defun aiaos-cli--get-current-provider ()
+  "Get current provider name."
+  (nth aiaos-cli--current-provider-index aiaos-cli--provider-order))
+
+(defun aiaos-cli--advance-provider ()
+  "Advance to next provider."
+  (setq aiaos-cli--current-provider-index
+        (mod (1+ aiaos-cli--current-provider-index)
+             (length aiaos-cli--provider-order))))
+
+(defun aiaos-cli--record-provider-stat (provider-name ok error-msg)
+  "Record provider statistics."
+  (let ((stat (assoc provider-name aiaos-cli--provider-stats)))
+    (if stat
+        (if ok
+            (setf (nth 0 (cadr stat)) (1+ (nth 0 (cadr stat))))
+          (setf (nth 1 (cadr stat)) (1+ (nth 1 (cadr stat))))
+          (when error-msg
+            (setf (nth 2 (cadr stat)) (1+ (nth 2 (cadr stat))))))
+      (push (list provider-name (list (if ok 1 0) (if ok 0 1) 0))
+            aiaos-cli--provider-stats))))
+
+;; ─── Tool Definitions ────────────────────────────────────────────────────────
+
+(defun aiaos-cli--build-tools ()
+  "Return list of tool definition hash-tables for the LLM."
+  (let ((read-tool (make-hash-table))
+        (read-params (make-hash-table))
+        (read-props (make-hash-table))
+        (write-tool (make-hash-table))
+        (write-params (make-hash-table))
+        (write-props (make-hash-table))
+        (cmd-tool (make-hash-table))
+        (cmd-params (make-hash-table))
+        (cmd-props (make-hash-table))
+        (list-tool (make-hash-table))
+        (list-params (make-hash-table))
+        (list-props (make-hash-table)))
+    ;; read_file
+    (puthash "type" "function" read-tool)
+    (puthash "function" (let ((f (make-hash-table)))
+                          (puthash "name" "read_file" f)
+                          (puthash "description" "Read the contents of a file." f)
+                          (puthash "parameters" read-params f)
+                          f) read-tool)
+    (puthash "type" "object" read-params)
+    (puthash "properties" read-props read-params)
+    (puthash "required" '("path") read-params)
+    (puthash "path" (let ((p (make-hash-table)))
+                      (puthash "type" "string" p)
+                      (puthash "description" "Absolute file path." p)
+                      p) read-props)
+    ;; write_file
+    (puthash "type" "function" write-tool)
+    (puthash "function" (let ((f (make-hash-table)))
+                          (puthash "name" "write_file" f)
+                          (puthash "description" "Write content to a file." f)
+                          (puthash "parameters" write-params f)
+                          f) write-tool)
+    (puthash "type" "object" write-params)
+    (puthash "properties" write-props write-params)
+    (puthash "required" '("path" "content") write-params)
+    (puthash "path" (let ((p (make-hash-table)))
+                      (puthash "type" "string" p)
+                      (puthash "description" "Absolute file path." p)
+                      p) write-props)
+    (puthash "content" (let ((p (make-hash-table)))
+                         (puthash "type" "string" p)
+                         (puthash "description" "Content to write." p)
+                         p) write-props)
+    ;; execute_command
+    (puthash "type" "function" cmd-tool)
+    (puthash "function" (let ((f (make-hash-table)))
+                          (puthash "name" "execute_command" f)
+                          (puthash "description" "Execute a shell command." f)
+                          (puthash "parameters" cmd-params f)
+                          f) cmd-tool)
+    (puthash "type" "object" cmd-params)
+    (puthash "properties" cmd-props cmd-params)
+    (puthash "required" '("command") cmd-params)
+    (puthash "command" (let ((p (make-hash-table)))
+                         (puthash "type" "string" p)
+                         (puthash "description" "Shell command." p)
+                         p) cmd-props)
+    (puthash "timeout" (let ((p (make-hash-table)))
+                         (puthash "type" "integer" p)
+                         (puthash "description" "Timeout seconds." p)
+                         p) cmd-props)
+    ;; list_files
+    (puthash "type" "function" list-tool)
+    (puthash "function" (let ((f (make-hash-table)))
+                          (puthash "name" "list_files" f)
+                          (puthash "description" "List files at path." f)
+                          (puthash "parameters" list-params f)
+                          f) list-tool)
+    (puthash "type" "object" list-params)
+    (puthash "properties" list-props list-params)
+    (puthash "required" '("path") list-params)
+    (puthash "path" (let ((p (make-hash-table)))
+                      (puthash "type" "string" p)
+                      (puthash "description" "Directory path." p)
+                      p) list-props)
+    (list read-tool write-tool cmd-tool list-tool)))
+
+;; ─── Tool Execution ──────────────────────────────────────────────────────────
+
+(defun aiaos-cli--tool-allowed (name)
+  "Check if tool NAME is allowed."
+  (or (null aiaos-cli-tool-allowlist)
+      (member name aiaos-cli-tool-allowlist)))
+
+(defun aiaos-cli--execute-tool (name arguments-json)
+  "Execute tool NAME with ARGUMENTS-JSON. Return result string."
+  (unless (aiaos-cli--tool-allowed name)
+    (error (format "Tool '%s' not in allowlist" name)))
+  (condition-case e
+      (let ((args (aiaos-cli--json-string-to-elisp arguments-json)))
+        (cond
+         ((string= name "read_file")
+          (let ((path (gethash "path" args)))
+            (if (not path)
+                (error "read_file: missing 'path'")
+              (if (file-directory-p path)
+                  (aiaos-cli--execute-tool "list_files"
+                                           (json-encode (list :path path)))
+                (if (not (file-exists-p path))
+                    (format "ERROR: File not found: %s" path)
+                  (with-temp-buffer
+                    (insert-file-contents path)
+                    (buffer-string)))))))
+         ((string= name "write_file")
+          (let ((path (gethash "path" args))
+                (content (gethash "content" args)))
+            (if (or (not path) (not content))
+                (error "write_file: missing 'path' or 'content'")
+              (let ((dir (file-name-directory path)))
+                (unless (file-exists-p dir)
+                  (make-directory dir t))
+                (with-temp-buffer
+                  (insert content)
+                  (write-region (point-min) (point-max) path))
+                (format "OK: Wrote %d bytes to %s" (length content) path)))))
+         ((string= name "execute_command")
+          (let ((cmd (gethash "command" args)))
+            (if (not cmd)
+                (error "execute_command: missing 'command'")
+              (let ((exit-code 0) stdout stderr)
+                (setq exit-code (call-process-shell-command
+                                 cmd nil
+                                 (get-buffer-create "*aiaos-cmd-out*")
+                                 (get-buffer-create "*aiaos-cmd-err*")))
+                (setq stdout (with-current-buffer "*aiaos-cmd-out*"
+                               (buffer-string)))
+                (setq stderr (with-current-buffer "*aiaos-cmd-err*"
+                               (buffer-string)))
+                (kill-buffer "*aiaos-cmd-out*")
+                (kill-buffer "*aiaos-cmd-err*")
+                (let ((result (format "Exit code: %d\n" exit-code)))
+                  (when (not (string-empty-p stdout))
+                    (setq result (concat result "\nSTDOUT:\n" stdout)))
+                  (when (not (string-empty-p stderr))
+                    (setq result (concat result "\nSTDERR:\n" stderr)))
+                  result)))))
+         ((string= name "list_files")
+          (let ((path (gethash "path" args)))
+            (if (not path)
+                (error "list_files: missing 'path'")
+              (if (not (file-exists-p path))
+                  (format "ERROR: Path not found: %s" path)
+                (if (file-directory-p path)
+                    (let ((entries (directory-files path t))
+                          (result ""))
+                      (dolist (f entries)
+                        (let ((info (file-attributes f)))
+                          (setq result
+                                (concat result
+                                        (format "%s %8d %s\n"
+                                                (if (file-directory-p f) "d" "-")
+                                                (nth 4 info)
+                                                f)))))
+                      result)
+                  (let ((info (file-attributes path)))
+                    (format "%8d %s\n" (nth 4 info) path)))))))
+         (t (format "ERROR: Unknown tool '%s'" name))))
+    (error (format "TOOL ERROR [%s]: %s" name (error-message-string e)))))
+
+;; ─── Request Building ────────────────────────────────────────────────────────
+
+(defun aiaos-cli--build-request-body (provider-name)
+  "Build LLM request body for PROVIDER-NAME."
+  (let* ((cfg (aiaos-cli--get-provider-config provider-name))
+         (models (plist-get cfg :models))
+         (model (or (plist-get cfg :default-model)
+                    (if models (plist-get (car models) :id) "unknown")))
+         (h (make-hash-table))
+         (msg-list nil))
+    (dolist (conv (reverse aiaos-cli--conversation))
+      (let* ((role (car conv))
+             (content (cdr conv))
+             (tool-call-id (plist-get conv :tool-call-id))
+             (tool-calls (plist-get conv :tool-calls)))
+        (let ((m (make-hash-table)))
+          (puthash "role" role m)
+          (when content (puthash "content" content m))
+          (when tool-call-id (puthash "tool_call_id" tool-call-id m))
+          (when tool-calls (puthash "tool_calls" tool-calls m))
+          (push m msg-list))))
+    (puthash "model" model h)
+    (puthash "messages" (nreverse msg-list) h)
+    (puthash "temperature" aiaos-cli-temperature h)
+    (puthash "max_tokens" aiaos-cli-max-tokens h)
+    (when aiaos-cli-enable-streaming
+      (puthash "stream" t h))
+    (when aiaos-cli-enable-tools
+      (puthash "tools" (aiaos-cli--build-tools) h))
+    h))
+
+;; ─── Response Parsing ────────────────────────────────────────────────────────
+
+(defun aiaos-cli--parse-sse-line (line)
+  "Parse SSE data line. Return parsed JSON or nil."
+  (let ((data (aiaos-cli--trim (substring line 5))))
+    (when (and (not (string-empty-p data))
+               (not (string= data "[DONE]")))
+      (condition-case _
+          (aiaos-cli--json-string-to-elisp data)
+        (error nil)))))
+
+(defun aiaos-cli--extract-content (data)
+  "Extract content from parsed LLM response DATA.
+Return (content tool-calls finish-reason)."
+  (let ((choices (gethash "choices" data))
+        (err-data (gethash "error" data))
+        (content nil)
+        (tool-calls nil)
+        (finish-reason nil))
+    (when err-data
+      (let ((err-msg (if (hash-table-p err-data)
+                          (gethash "message" err-data)
+                        err-data))
+            (err-code (if (hash-table-p err-data)
+                           (gethash "code" err-data)
+                         nil)))
+        (signal 'aiaos-cli-llm-error
+                (list (format "API error: %s" err-msg)
+                      "api"
+                      (or err-code "api")))))
+    (if choices
+        (let ((first (car choices)))
+          (when (hash-table-p first)
+            (setq finish-reason (gethash "finish_reason" first))
+            (let ((msg (gethash "message" first)))
+              (when (hash-table-p msg)
+                (setq content (gethash "content" msg))
+                (setq tool-calls (gethash "tool_calls" msg))))))
+      (signal 'aiaos-cli-llm-error
+              (list "Unexpected response format" "unknown" "unknown")))
+    (list content tool-calls finish-reason)))
+
+(defun aiaos-cli--extract-stream-chunk (data)
+  "Extract content delta from SSE stream chunk DATA.
+Return (content-delta tool-call-delta finish-reason) or nil."
+  (let ((choices (gethash "choices" data))
+        (content-delta nil)
+        (tool-call-delta nil)
+        (finish-reason nil))
+    (when choices
+      (let ((first (car choices)))
+        (when (hash-table-p first)
+          (setq finish-reason (gethash "finish_reason" first))
+          (let ((delta (gethash "delta" first)))
+            (when (hash-table-p delta)
+              (setq content-delta (gethash "content" delta))
+              (setq tool-call-delta (gethash "tool_calls" delta)))))))
+    (when (or content-delta tool-call-delta finish-reason)
+      (list content-delta tool-call-delta finish-reason))))
+
+;; ─── LLM Chat (with agent loop) ──────────────────────────────────────────────
+
+(defun aiaos-cli--try-provider (provider-name retry)
+  "Try PROVIDER-NAME. Return response content string."
+  (let ((cfg (aiaos-cli--get-provider-config provider-name))
+        (api-key (plist-get cfg :api-key))
+        (api-url (plist-get cfg :api-url))
+        (body (aiaos-cli--build-request-body provider-name))
+        (body-json (json-encode body))
+        (response-content "")
+        (tool-calls nil)
+        (steps 0))
+    (message "[AIAOS] Provider: %s (retry %d)" provider-name retry)
+    ;; First call
+    (if aiaos-cli-enable-streaming
+        (aiaos-cli--http-post-stream
+         api-url api-key body-json aiaos-cli-timeout
+         (lambda (line)
+           (let ((data (aiaos-cli--parse-sse-line line)))
+             (when data
+               (let ((chunk (aiaos-cli--extract-stream-chunk data)))
+                 (when chunk
+                   (let ((cd (nth 0 chunk))
+                         (tc (nth 1 chunk))
+                         (fr (nth 2 chunk)))
+                     (when cd (setq response-content (concat response-content cd)))
+                     (when tc (setq tool-calls (append (or tool-calls '()) tc)))
+                     (when fr (ignore fr)))))))))
+      (let ((raw (aiaos-cli--http-post api-url api-key body-json aiaos-cli-timeout)))
+        (let ((data (aiaos-cli--json-string-to-elisp raw)))
+          (let ((parsed (aiaos-cli--extract-content data)))
+            (setq response-content (nth 0 parsed))
+            (setq tool-calls (nth 1 parsed))))))
+    ;; Agent loop
+    (while (and tool-calls (< steps aiaos-cli-max-agent-steps))
+      (setq steps (1+ steps))
+      (message "[AIAOS] Agent step %d/%d: %d tool calls"
+               steps aiaos-cli-max-agent-steps (length tool-calls))
+      ;; Add assistant message with tool_calls
+      (push (cons "assistant" (list :tool-calls tool-calls
+                                    :content response-content))
+            aiaos-cli--conversation)
+      ;; Execute each tool call
+      (dolist (tc tool-calls)
+        (when (hash-table-p tc)
+          (let* ((id (gethash "id" tc))
+                 (fn (gethash "function" tc))
+                 (fn-name (when (hash-table-p fn) (gethash "name" fn)))
+                 (fn-args (when (hash-table-p fn) (gethash "arguments" fn)))
+                 (result nil))
+            (message "[AIAOS] Tool: %s" fn-name)
+            (condition-case _
+                (setq result (aiaos-cli--execute-tool fn-name fn-args))
+              (error (setq result (format "ERROR: %s" (error-message-string it)))))
+            (push (cons "tool" (list :tool-call-id id
+                                     :content (or result "")))
+                  aiaos-cli--conversation)))))
+      ;; Reset and make next call
+      (setq response-content "")
+      (setq tool-calls nil)
+      (setq body (aiaos-cli--build-request-body provider-name))
+      (setq body-json (json-encode body))
+      (if aiaos-cli-enable-streaming
+          (aiaos-cli--http-post-stream
+           api-url api-key body-json aiaos-cli-timeout
+           (lambda (line)
+             (let ((data (aiaos-cli--parse-sse-line line)))
+               (when data
+                 (let ((chunk (aiaos-cli--extract-stream-chunk data)))
+                   (when chunk
+                     (let ((cd (nth 0 chunk))
+                           (tc (nth 1 chunk))
+                           (fr (nth 2 chunk)))
+                       (when cd (setq response-content (concat response-content cd)))
+                       (when tc (setq tool-calls (append (or tool-calls '()) tc)))
+                       (when fr (ignore fr)))))))))
+        (let ((raw (aiaos-cli--http-post api-url api-key body-json aiaos-cli-timeout)))
+          (let ((data (aiaos-cli--json-string-to-elisp raw)))
+            (let ((parsed (aiaos-cli--extract-content data)))
+              (setq response-content (nth 0 parsed))
+              (setq tool-calls (nth 1 parsed))))))
+    (when (>= steps aiaos-cli-max-agent-steps)
+      (message "[AIAOS] Max agent steps reached"))
+    (if (string-empty-p response-content)
+        (signal 'aiaos-cli-llm-error
+                (list "Empty response" "unknown" "unknown"))
+      response-content)))
+
+(defun aiaos-cli--llm-chat (user-input)
+  "Send USER-INPUT to LLM with provider fallback."
+  (push (cons "user" user-input) aiaos-cli--conversation)
+  (let ((total-providers (length aiaos-cli--provider-order))
+        (prov-attempt 0)
+        (last-err nil))
+    (while (< prov-attempt total-providers)
+      (let ((prov-name (aiaos-cli--get-current-provider))
+            (retry 0)
+            response)
+        (while (<= retry aiaos-cli-max-retry)
+          (condition-case err
+              (progn
+                (setq response (aiaos-cli--try-provider prov-name retry))
+                (aiaos-cli--record-provider-stat prov-name t nil)
+                (throw 'aiaos-cli--llm-chat-done response))
+            (aiaos-cli-llm-error
+             (setq last-err (error-message-string err))
+             (aiaos-cli--record-provider-stat prov-name nil last-err)
+             (push (list prov-name last-err (current-time-string))
+                   aiaos-cli--error-log)
+             (setq retry (1+ retry)))))
+        (aiaos-cli--advance-provider)
+        (setq prov-attempt (1+ prov-attempt))))
+    (signal 'aiaos-cli-llm-error
+            (list (format "All providers failed. Last: %s" last-err)
+                  "all-failed" "all-failed"))))
+
+;; ─── UI / Display ────────────────────────────────────────────────────────────
+
+(defun aiaos-cli--insert-prompt ()
+  "Insert prompt line."
+  (insert (propertize "❯ " 'face 'font-lock-keyword-face)))
+
+(defun aiaos-cli--insert-output (text)
+  "Insert LLM output TEXT."
+  (insert (propertize "\n" 'face 'font-lock-comment-face))
+  (insert text)
+  (insert (propertize "\n\n" 'face 'font-lock-comment-face)))
+
+(defun aiaos-cli--insert-error (msg)
+  "Insert error message MSG."
+  (insert (propertize (concat "\n[ERROR] " msg "\n")
+                      'face 'font-lock-error-face)))
+
+(defun aiaos-cli--insert-info (msg)
+  "Insert info message."
+  (insert (propertize (concat "\n[INFO] " msg "\n")
+                      'face 'font-lock-comment-face)))
+
+;; ─── Input Handling ──────────────────────────────────────────────────────────
+
+(defun aiaos-cli--handle-return ()
+  "Handle Enter key."
+  (interactive)
+  (let ((input
+         (buffer-substring-no-properties
+          (or aiaos-cli--input-start (point-min)) (point))))
+    (delete-region aiaos-cli--input-start (point))
+    (unless (string= (aiaos-cli--trim input) "")
+      (unless (aiaos-cli--handle-commands input)
+        (insert (propertize "..." 'face 'font-lock-comment-face))
+        (condition-case err
+            (let ((response (aiaos-cli--llm-chat input)))
+              (delete-char -3)
+              (aiaos-cli--insert-output response))
+          (aiaos-cli-llm-error
+           (delete-char -3)
+           (aiaos-cli--insert-error (error-message-string err))))))
+    (aiaos-cli--insert-prompt)
+    (setq aiaos-cli--input-start (point))))
+
+(defun aiaos-cli--handle-commands (input)
+  "Handle slash commands."
+  (let ((cmd (if (string-prefix-p "/" input)
+                 (substring input 0 (or (string-match " " input) (length input)))
+               nil)))
+    (cond
+     ((equal cmd "/help")
+      (aiaos-cli--insert-info "Commands: /help /clear /providers /tools /stream /exit")
+      t)
+     ((equal cmd "/clear")
+      (aiaos-cli--handle-clear)
+      t)
+     ((equal cmd "/providers")
+      (aiaos-cli--handle-providers)
+      t)
+     ((equal cmd "/tools")
+      (aiaos-cli--handle-tools)
+      t)
+     ((equal cmd "/stream")
+      (aiaos-cli--handle-stream-toggle)
+      t)
+     ((equal cmd "/exit")
+      (aiaos-cli--insert-info "Goodbye!")
+      (kill-this-buffer)
+      t)
+     (t nil))))
+
+(defun aiaos-cli--handle-clear ()
+  "Handle /clear command."
+  (interactive)
+  (setq aiaos-cli--conversation '())
+  (aiaos-cli--insert-info "Conversation cleared."))
+
+(defun aiaos-cli--handle-providers ()
+  "Handle /providers command."
+  (interactive)
+  (aiaos-cli--insert-info "=== LLM Providers ===")
+  (let ((idx 0))
+    (dolist (name aiaos-cli--provider-order)
+      (let* ((stat (assoc name aiaos-cli--provider-stats))
+             (is-current (equal name (aiaos-cli--get-current-provider)))
+             (marker (if is-current "→" " ")))
+        (aiaos-cli--insert-info
+         (format "%s %d. %s (ok: %s, fail: %s)"
+                 marker (1+ idx) name
+                 (if stat (nth 0 (cadr stat)) 0)
+                 (if stat (nth 1 (cadr stat)) 0))))
+      (setq idx (1+ idx)))))
+
+(defun aiaos-cli--handle-tools ()
+  "Handle /tools command."
+  (interactive)
+  (aiaos-cli--insert-info "=== Tools ===")
+  (aiaos-cli--insert-info (format "Tools enabled: %s" aiaos-cli-enable-tools))
+  (aiaos-cli--insert-info (format "Allowlist: %s"
+                                  (if aiaos-cli-tool-allowlist
+                                      aiaos-cli-tool-allowlist
+                                    "all")))
+  (aiaos-cli--insert-info (format "Max agent steps: %d" aiaos-cli-max-agent-steps))
+  (aiaos-cli--insert-info "Available: read_file, write_file, execute_command, list_files"))
+
+(defun aiaos-cli--handle-stream-toggle ()
+  "Handle /stream command."
+  (interactive)
+  (setq aiaos-cli-enable-streaming (not aiaos-cli-enable-streaming))
+  (aiaos-cli--insert-info (format "Streaming: %s"
+                                  (if aiaos-cli-enable-streaming "ON" "OFF"))))
+
+;; ─── Mode Definition ─────────────────────────────────────────────────────────
+
+(defvar aiaos-cli-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") 'aiaos-cli--handle-return)
+    (define-key map (kbd "C-c C-c") 'aiaos-cli--handle-clear)
+    (define-key map (kbd "C-c C-l") 'aiaos-cli--handle-providers)
+    (define-key map (kbd "C-c C-t") 'aiaos-cli--handle-tools)
+    (define-key map (kbd "C-c C-s") 'aiaos-cli--handle-stream-toggle)
+    (define-key map (kbd "C-c C-q") 'kill-this-buffer)
+    (set-keymap-parent map special-mode-map)
+    map)
+  "Keymap for aiaos-cli-mode.")
+
+(define-derived-mode aiaos-cli-mode special-mode "AIAOS-CLI"
+  "AIAOS CLI mode for chatting with LLM providers."
+  (setq buffer-read-only nil)
+  (setq-local aiaos-cli--input-start (point))
+  (setq-local aiaos-cli--mode-active t)
+  (aiaos-cli--insert-prompt)
+  (setq aiaos-cli--input-start (point))
+  (aiaos-cli--insert-info
+   (format "AIAOS CLI v6.0.0 | Provider: %s | Tools: %s | Stream: %s"
+           (aiaos-cli--get-current-provider)
+           (if aiaos-cli-enable-tools "ON" "OFF")
+           (if aiaos-cli-enable-streaming "ON" "OFF")))
+  (aiaos-cli--insert-info "Type /help for commands"))
+
+;; ─── Entry Point ─────────────────────────────────────────────────────────────
+
+(defun aiaos-cli ()
+  "Open AIAOS CLI buffer."
+  (interactive)
+  (unless aiaos-cli--llm-ready
+    (aiaos-cli--init-provider-system))
+  (with-current-buffer (get-buffer-create "*aiaos-cli*")
+    (aiaos-cli-mode)
+    (setq buffer-read-only nil)
+    (switch-to-buffer (current-buffer))
+    (goto-char (point-max))
+    (aiaos-cli--insert-prompt)
+    (setq aiaos-cli--input-start (point))))
+
+(defalias 'aiaos-cli-open 'aiaos-cli)
+
+
+;; ─── Initialization ──────────────────────────────────────────────────────────
+
+(when (file-exists-p aiaos-cli-config-file)
+  (condition-case _
+      (aiaos-cli--init-provider-system)
+    (error nil)))
+
+
+;; -- User entry points (aliases) ----------------------------------------------
+;; MUST be placed AFTER all defun definitions so the alias targets exist.
+;; `aiaos' is the command users invoke via M-x aiaos.
+(defalias 'aiaos 'aiaos-cli)
+
+;; Backward-compatible alias: older byte-compiled code may call the
+;; single-underscore name. Route it to the current double-underscore function
+;; to avoid "Symbol's function definition is void".
+(defalias 'aiaos-cli-init-provider-system 'aiaos-cli--init-provider-system)
+
+(provide 'aiaos-cli)
+;;; aiaos-cli.el ends here

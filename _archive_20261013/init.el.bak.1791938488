@@ -1,0 +1,41 @@
+;;; init.el --- AIAOS CLI for Emacs initialization -*- lexical-binding: t -*-
+
+;; Add the directory to load path
+(add-to-list 'load-path (expand-file-name (file-name-directory load-file-name)))
+
+;; Load all required modules (in dependency order)
+(require 'aiaos-cli)
+(require 'aiaos-cli-llm)
+(require 'aiaos-cli-task)
+(require 'aiaos-cli-exec)
+(require 'aiaos-cli-msg)
+(require 'aiaos-cli-protocol)
+(require 'aiaos-cli-config)
+
+;; P1 modules
+(when (file-readable-p (expand-file-name "aiaos-llm-adapter.el"
+                                          (file-name-directory load-file-name)))
+  (require 'aiaos-llm-adapter))
+(when (file-readable-p (expand-file-name "aiaos-cli-throttle.el"
+                                          (file-name-directory load-file-name)))
+  (require 'aiaos-cli-throttle))
+(when (file-readable-p (expand-file-name "aiaos-cli-tracing.el"
+                                          (file-name-directory load-file-name)))
+  (require 'aiaos-cli-tracing))
+(when (file-readable-p (expand-file-name "aiaos-cli-skill.el"
+                                          (file-name-directory load-file-name)))
+  (require 'aiaos-cli-skill))
+
+;; Register protocol handlers (idempotent)
+(when (fboundp 'aiaos-cli--register-protocol)
+  (dolist (proto '("http" "mqtt" "websocket" "grpc" "tcp" "udp"))
+    (condition-case err
+        (aiaos-cli--register-protocol proto nil)
+      (error nil))))
+
+;; Bind a convenient key
+(when (fboundp 'aiaos)
+  (define-key global-map (kbd "C-c a") 'aiaos))
+
+(provide 'init)
+;;; init.el ends here

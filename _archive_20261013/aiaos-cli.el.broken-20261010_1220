@@ -1,0 +1,70 @@
+(defun aiaos-cli--execute-tool (name arguments-json)
+  "Execute tool NAME with ARGUMENTS-JSON. Return result string."
+  (unless (aiaos-cli--tool-allowed name)
+    (error (format "Tool '%s' not in allowlist" name)))
+  (condition-case err
+      (let* ((args (aiaos-cli--json-string-to-elisp arguments-json)))
+        (cond
+         ((string= name "read_file")
+          (let ((path (gethash "path" args)))
+            (if (not path)
+                (error "read_file: missing 'path'")
+              (if (file-directory-p path)
+                  (aiaos-cli--execute-tool "list_files" (json-encode (list :path path)))
+                (if (not (file-exists-p path))
+                    (format "ERROR: Path not found: %s" path)
+                  (with-temp-buffer
+                    (insert-file-contents path)
+                    (buffer-string)))))))
+         ((string= name "write_file")
+          (let ((path (gethash "path" args))
+                (content (gethash "content" args)))
+            (if (or (not path) (not content))
+                (error "write_file: missing 'path' or 'content'")
+              (let ((dir (file-name-directory path)))
+                (unless (file-exists-p dir)
+                  (make-directory dir t))
+                (write-region 0 (length content) path nil 'nomessage)
+                (format "Written %d bytes to %s" (length content) path)))))
+         ((string= name "execute_command")
+          (let ((cmd (gethash "command" args)))
+            (if (not cmd)
+                (error "execute_command: missing 'command'")
+              (let* ((exit-code (call-process-shell-command cmd "*aiaos-cmd-out*" "*aiaos-cmd-err*" nil))
+                     (stdout (with-current-buffer "*aiaos-cmd-out*"
+                               (buffer-string)))
+                     (stderr (with-current-buffer "*aiaos-cmd-err*"
+                               (buffer-string)))
+                     (result (format "Exit code: %d
+" exit-code)))
+                (kill-buffer "*aiaos-cmd-out*")
+                (kill-buffer "*aiaos-cmd-err*")
+                (when (not (string= stdout ""))
+                  (setq result (concat result "STDOUT:
+" stdout)))
+                (when (not (string= stderr ""))
+                  (setq result (concat result "STDERR:
+" stderr)))
+                result))))
+         ((string= name "list_files")
+          (let ((path (gethash "path" args)))
+            (if (not path)
+                (error "list_files: missing 'path'")
+              (if (not (file-exists-p path))
+                  (format "ERROR: Path not found: %s" path)
+                (if (file-directory-p path)
+                    (let* ((entries (directory-files path t))
+                           (result ""))
+                      (dolist (f entries)
+                        (setq result
+                              (concat result
+                                      (format "%s %8d %s
+"
+                                              (if (file-directory-p f) "d" "-")
+                                              (nth 4 (file-attributes f))
+                                              f))))
+                      result)
+                  (format "%8d %s
+" (nth 4 (file-attributes path)) path)))))))
+         (t (format "ERROR: Unknown tool '%s'" name))))
+    (error (format "TOOL ERROR [%s]: %s" name (error-message-string err)))))

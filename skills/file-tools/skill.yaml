@@ -1,0 +1,75 @@
+name: "file-tools"
+version: "1.0.0"
+description: "AIAOS-CLI 文件工具技能包：文件统计、头尾截取、哈希校验、路径规范化"
+author: "AIAOS Project"
+license: "MIT"
+keywords: ["file", "stat", "checksum", "path", "productivity"]
+
+dependencies:
+  core: ">=1.0.0"
+  skills: []
+  system:
+    - "coreutils>=8"
+
+commands:
+  - name: "stat"
+    entry: "commands/stat.el"
+    description: "统计文件的字节数、行数、字符数、词数与修改时间"
+    args:
+      - name: "path"
+        type: "string"
+        required: true
+        description: "目标文件路径"
+
+  - name: "head-tail"
+    entry: "commands/head-tail.el"
+    description: "截取文件前 N 行或后 N 行"
+    args:
+      - name: "path"
+        type: "string"
+        required: true
+        description: "目标文件路径"
+    options:
+      - name: "--lines"
+        short: "-n"
+        type: "integer"
+        description: "截取行数（默认 10）"
+        default: 10
+      - name: "--mode"
+        short: "-m"
+        type: "string"
+        description: "截取模式 head|tail（默认 head）"
+        default: "head"
+
+  - name: "checksum"
+    entry: "commands/checksum.el"
+    description: "计算文件的 MD5 或 SHA256 摘要"
+    args:
+      - name: "path"
+        type: "string"
+        required: true
+        description: "目标文件路径"
+    options:
+      - name: "--algo"
+        short: "-a"
+        type: "string"
+        description: "摘要算法 md5|sha256（默认 sha256）"
+        default: "sha256"
+
+  - name: "normalize"
+    entry: "commands/normalize.el"
+    description: "规范化路径并返回绝对路径、目录、文件名与扩展名"
+    args:
+      - name: "path"
+        type: "string"
+        required: true
+        description: "待规范化的路径"
+
+hooks:
+  pre-command: "hooks/pre-command.el"
+  post-command: "hooks/post-command.el"
+  on-load: "hooks/on-load.el"
+
+resources:
+  templates: []
+  schemas: []

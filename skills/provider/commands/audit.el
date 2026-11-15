@@ -1,0 +1,36 @@
+;;; aiaos-cli-skill-provider/commands/audit.el --- Provider 审计日志 -*- lexical-binding: t; -*-
+
+(require 'aiaos-cli-core)
+(require 'aiaos-cli-router)
+(require 'aiaos-cli-provider)
+(require 'cl-lib)
+
+(defun aiaos-cli-skill-provider/audit (args options _ctx)
+  "Query provider audit log."
+  (let* ((limit (plist-get options :limit))
+         (json-mode (or (plist-get options :json) aiaos-cli--json-mode))
+         (entries (aiaos-cli-provider--audit-read limit)))
+    (if (null entries)
+        (aiaos-cli--result-success :entries '() :output "No audit entries.")
+      (let* ((output
+              (format "Provider audit log (%d entries):\n%s"
+                      (length entries)
+                      (mapconcat (lambda (e)
+                                   (format "  %s | %s | %s | %s"
+                                           (plist-get e :timestamp)
+                                           (plist-get e :provider)
+                                           (plist-get e :action)
+                                           (plist-get e :detail)))
+                                 entries "\n"))))
+        (if json-mode
+            (aiaos-cli--result-success :entries entries :output output)
+          (aiaos-cli--result-success :output output))))))
+
+(put 'aiaos-cli-skill-provider/audit 'aiaos-cli-command-spec
+    '(:description "Query provider audit log"
+      :args nil
+      :options ((:name "limit" :short "l" :type number :default 20 :description "Max entries")
+                (:name "json" :short "j" :type boolean :default false :description "JSON output"))))
+
+(provide 'aiaos-cli-skill-provider/commands/audit)
+;;; aiaos-cli-skill-provider/commands/audit.el ends here

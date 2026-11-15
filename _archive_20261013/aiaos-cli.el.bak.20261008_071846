@@ -1,0 +1,135 @@
+;;; aiaos-cli.el --- AIAOS CLI for Emacs -*- lexical-binding: t -*-
+
+(require 'cl-lib)
+(require 'json)
+
+(defcustom aiaos-cli-binary "/home/shjiaye8/aiaos/bin/aiaos"
+  "Path to aiaos binary.")
+(defcustom aiaos-cli-timeout 120
+  "Timeout for aiaos calls in seconds.")
+
+(defvar aiaos-cli--input-start nil)
+
+(defun aiaos-cli--get-current-input ()
+  "Return the text the user typed on the current prompt line."
+  (unless aiaos-cli--input-start
+    nil)
+  (save-excursion
+    (goto-char (point-max))
+    (let* ((pt-end (point))
+           (pt-start (min aiaos-cli--input-start pt-end))
+           (text (buffer-substring-no-properties pt-start pt-end)))
+      (when (string-trim text)
+        text))))
+
+(defun aiaos-cli--clear-input-line ()
+  "Delete the current prompt line."
+  (unless aiaos-cli--input-start
+    nil)
+  (save-excursion
+    (goto-char aiaos-cli--input-start)
+    (beginning-of-line)
+    (delete-region (point)
+                   (min (point-max)
+                        (1+ (line-end-position))))))
+
+(defun aiaos-cli--insert-prompt ()
+  "Insert a fresh input prompt."
+  (goto-char (point-max))
+  (unless (bolp)
+    (insert "\n"))
+  (insert "> ")
+  (setq aiaos-cli--input-start (point)))
+
+(defun aiaos-cli--send-message ()
+  "Send the current input to AIAOS."
+  (interactive)
+  (let ((input (aiaos-cli--get-current-input)))
+    (cond
+     ((null input)
+      (aiaos-cli--insert-prompt))
+     ((string= input "/quit")
+      (bury-buffer))
+     ((string= input "/help")
+      (aiaos-cli--clear-input-line)
+      (goto-char (point-max))
+      (insert "\nCommands:\n  /help    show this help\n  /quit    close this buffer\n")
+      (aiaos-cli--insert-prompt))
+     (t
+      (aiaos-cli--clear-input-line)
+      (goto-char (point-max))
+      (insert "\nYou: " input "\n")
+      (message "AIAOS: thinking...")
+      (let ((response (aiaos-cli--call-aiaos input)))
+        (goto-char (point-max))
+        (insert "AIAOS: " response "\n")
+        (aiaos-cli--insert-prompt))))))
+
+(defun aiaos-cli--call-aiaos (query)
+  "Call aiaos binary with QUERY and return response text."
+  (let* ((cmd (format "%s --dialog %s"
+                      aiaos-cli-binary
+                      (shell-quote-argument query)))
+         (result (shell-command-to-string cmd)))
+    (if (string= result "")
+        "[no response]"
+      (aiaos-cli--parse-dialog-output result))))
+
+(defun aiaos-cli--parse-dialog-output (output)
+  "Parse JSONL dialog output from aiaos."
+  (let ((lines (split-string output "\n" t))
+        responses)
+    (dolist (line lines)
+      (let ((trimmed (string-trim line)))
+        (when (and (string-prefix-p "{" trimmed)
+                   (string-suffix-p "}" trimmed))
+          (condition-case _
+              (let ((obj (json-read-from-string trimmed)))
+                (when (equal (plist-get obj :type) "response")
+                  (let ((content (plist-get obj :content)))
+                    (when content
+                      (push content responses)))))
+              (error nil))))
+    (if responses
+        (string-join (nreverse responses) "\n")
+      "[no response text found]")))
+
+;;; Major mode
+
+(defvar aiaos-cli-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") 'aiaos-cli--send-message)
+    (define-key map (kbd "C-c C-c") 'interrupt-recursive-edit)
+    map)
+  "Keymap for aiaos-cli-mode.")
+
+(defun aiaos-cli-mode ()
+  "Major mode for AIAOS CLI interaction.
+RET sends the current input to AIAOS.
+Type /help for commands, /quit to bury the buffer."
+  (interactive)
+  (setq major-mode 'aiaos-cli-mode)
+  (setq mode-name "AIAOS CLI")
+  (setq buffer-read-only nil)
+  (use-local-map aiaos-cli-mode-map)
+  (setq-local local-echo-delay 0)
+  (setq-local truncate-lines nil)
+  (run-mode-hooks 'aiaos-cli-mode-hooks))
+
+(defvar aiaos-cli-mode-hooks nil
+  "Hooks run after entering aiaos-cli-mode.")
+
+(defun aiaos ()
+  "Open AIAOS CLI buffer."
+  (interactive)
+  (with-current-buffer (get-or-create-buffer "*AIAOS CLI*")
+    (erase-buffer)
+    (aiaos-cli-mode)
+    (insert "AIAOS CLI for Emacs\n===================\n\n")
+    (insert "Type your message and press RET to send.\n")
+    (insert "Commands: /help /quit\n\n")
+    (aiaos-cli--insert-prompt)
+    (switch-to-buffer (current-buffer))))
+
+(provide 'aiaos-cli)
+;;; aiaos-cli.el ends here

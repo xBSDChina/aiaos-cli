@@ -1,0 +1,156 @@
+;;; aiaos-cli.el --- AI CLI for Emacs -*- lexical-bind: t -*-
+
+(require 'json)
+(require 'url-http)
+(require 'cl-lib)
+
+(defgroup aiaos-cli nil
+  "AI CLI for Emacs"
+  :group 'applications)
+
+(defcustom aiaos-cli-default-provider "sensenova"
+  "Default provider to use."
+  :type 'string)
+
+(defvar aiaos-cli--conversation nil)
+(defvar aiaos-cli--providers nil)
+
+(defun aiaos-cli--json-escape (str)
+  "Escape string STR for JSON."
+  (let ((r (replace-regexp-in-string "\\" "\\\\" str t)))
+    (setq r (replace-regexp-in-string """ "\\"" r t))
+    (setq r (replace-regexp-in-string "\n" "\\n" r t))
+    (setq r (replace-regexp-in-string "\r" "\\r" r t))
+    (setq r (replace-regexp-in-string "\t" "\\t" r t))
+    (concat """ r """)))
+
+(defun aiaos-cli--load-providers ()
+  "Load provider configurations from ~/.openclaw/providers.json."
+  (interactive)
+  (let ((config-file (concat (getenv "HOME") "/.openclaw/providers.json"))
+        (ht (make-hash-table :test 'equal))
+        (default aiaos-cli-default-provider)
+        parsed entry key val key-str)
+    (if (file-exists-p config-file)
+        (progn
+          (with-temp-buffer
+            (insert-file-contents config-file)
+            (goto-char (point-min))
+            (setq parsed (json-read)))
+          (dolist (entry parsed)
+            (when (consp entry)
+              (setq key (car entry))
+              (setq val (cdr entry))
+              (setq key-str (if (symbolp key) (symbol-name key) key))
+              (when (stringp key-str)
+                (if (listp val)
+                    (progn
+                      (puthash (intern key-str) val ht)
+                      (when (string-equal key-str "order")
+                        (setq default (or (car val) default))))
+                    (puthash (intern key-str) (list val) ht))))))
+          (message "[AIAOS] Loaded %d providers, default: %s"
+                   (hash-table-count ht) default))
+        (message "[AIAOS] No config file found"))
+    (setq aiaos-cli--providers ht)
+    ht))
+
+(defun aiaos-cli--get-provider-config (provider-name)
+  "Get configuration for PROVIDER-NAME."
+  (let ((cfg (gethash (intern provider-name) aiaos-cli--providers)))
+    (if cfg cfg
+        (message "[AIAOS] Provider not found: %s" provider-name))))
+
+(defun aiaos-cli--send-message (provider-name text)
+  "Send TEXT to PROVIDER-NAME and display response."
+  (let ((cfg (aiaos-cli--get-provider-config provider-name)))
+    (if (not cfg)
+        (message "[AIAOS] Provider not found: %s" provider-name)
+        (let ((api-url (or (cdr (assoc "api-url" cfg)) ""))
+              (api-key (or (cdr (assoc "api-key" cfg)) ""))
+              (model (or (cdr (assoc "default-model" cfg)) "")))
+          (setq aiaos-cli--conversation
+                (append aiaos-cli--conversation
+                        (list (list (cons "role" "user") (cons "content" text)))))
+          (let ((body (list :model model
+                            :messages aiaos-cli--conversation
+                            :stream t))
+                (body-json (json-encode body)))
+            (message "[AIAOS] Sending to %s (%s)..." provider-name model)
+            (let ((result (url-retrieve-synchronously
+                            api-url 'silent t 60
+                            (list "Content-Type: application/json"
+                                  (format "Authorization: Bearer %s" api-key))
+                            body-json)))
+              (let ((response-body
+                     (aiaos-cli--extract-response-body result)))
+                (aiaos-cli--display-response provider-name response-body)))))))
+
+(defun aiaos-cli--extract-response-body (result)
+  "Extract response body from URL retrieval RESULT."
+  (cond
+   ((listp result)
+    (goto-char (point-min))
+    (let ((header-end (search-forward "\r\n\r\n" nil t)))
+      (if header-end
+          (progn
+            (goto-char header-end)
+            (forward-line 2)
+            (buffer-substring (point) (point-max)))
+          (buffer-string))))
+   ((stringp result) result)
+   (t "")))
+
+(defun aiaos-cli--display-response (provider-name response-body)
+  "Display RESPONSE-BODY from PROVIDER-NAME."
+  (let ((response (aiaos-cli--parse-sse-response response-body)))
+    (if response
+        (progn
+          (setq aiaos-cli--conversation
+                (append aiaos-cli--conversation
+                        (list (list (cons "role" "assistant") (cons "content" response)))))
+          (message "[AIAOS] Response from %s:" provider-name)
+          (display-buffer (get-buffer-create "*aiaos-cli*"))
+          (switch-to-buffer "*aiaos-cli*")
+          (goto-char (point-max))
+          (insert "\n\n" response "\n"))
+        (message "[AIAOS] No response received"))))
+
+(defun aiaos-cli--parse-sse-response (body)
+  "Parse SSE response BODY."
+  (if (not body) nil
+      (let ((lines (split-string body "\n"))
+            (content ""))
+        (dolist (line lines)
+          (when (string-match "^data: \(.*\)" line)
+            (let ((data (match-string 1 line)))
+              (when (and (stringp data)
+                         (not (string-equal data "[DONE]")))
+                (setq content (concat content data))))))
+        content)))
+
+(defun aiaos-cli-chat (prompt &optional provider)
+  "Chat with AI using PROMPT and optional PROVIDER."
+  (interactive "sPrompt: ")
+  (let ((p (or provider aiaos-cli-default-provider)))
+    (aiaos-cli--send-message p prompt)))
+
+(defun aiaos-cli-send ()
+  "Send current input to AI."
+  (interactive)
+  (let ((input (read-string "Prompt: ")))
+    (aiaos-cli-chat input)))
+
+(defun aiaos-cli-clear ()
+  "Clear conversation history."
+  (interactive)
+  (setq aiaos-cli--conversation nil)
+  (message "[AIAOS] Conversation cleared"))
+
+(defun aiaos-cli-history ()
+  "Show conversation history."
+  (interactive)
+  (message "[AIAOS] History: %d messages"
+           (length aiaos-cli--conversation)))
+
+(provide 'aiaos-cli)

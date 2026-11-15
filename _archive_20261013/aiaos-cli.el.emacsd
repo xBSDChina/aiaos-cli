@@ -1,0 +1,237 @@
+;;; aiaos-cli.el --- AIAOS CLI for Emacs -*- lexical-binding: t -*-
+
+(require 'cl-lib)
+(require 'json)
+
+(defgroup aiaos-cli nil
+  "AIAOS CLI for Emacs."
+  :group 'tools)
+
+(defcustom aiaos-cli-openclaw-config "~/.openclaw/openclaw.json"
+  "Path to openclaw.json."
+  :type 'string
+  :group 'aiaos-cli)
+
+(defvar aiaos-cli-providers (make-hash-table :test 'equal))
+(defvar aiaos-cli-fallback-chain '())
+(defvar aiaos-cli-current-provider nil)
+(defvar aiaos-cli-current-model nil)
+(defvar aiaos-cli-temperature 0.7)
+(defvar aiaos-cli-max-tokens 4096)
+(defvar aiaos-cli--conversation '())
+(defvar aiaos-cli--busy nil)
+
+(defun aiaos-cli--import-providers ()
+  "Import providers from openclaw.json config."
+  (let ((config-path (expand-file-name aiaos-cli-openclaw-config)))
+    (when (file-exists-p config-path)
+      (with-temp-buffer
+        (insert-file-contents config-path)
+        (let ((data (json-parse-string (buffer-string) :object-type 'hash-table)))
+          (when data
+            (let ((models (gethash "models" data))
+                  providers-hash)
+              (when models
+                (let ((providers (gethash "providers" models)))
+                  (when providers
+                    (maphash
+                     (lambda (name info)
+                       (let ((base-url (gethash "baseUrl" info))
+                             (api-key (gethash "apiKey" info))
+                             (model-id (gethash "defaultModel" info)))
+                         (puthash name (list base-url api-key model-id) providers-hash)))
+                     providers)))
+                  (setf aiaos-cli-providers providers-hash))
+                (let ((default-provider (gethash "default_provider" data)))
+                  (when default-provider
+                    (setf aiaos-cli-current-provider default-provider)
+                    (let ((cur (gethash default-provider providers-hash)))
+                      (when cur
+                        (setf aiaos-cli-current-model (nth 2 cur))))))
+                (let ((fallback (gethash "fallback_chain" data)))
+                  (when fallback
+                    (setf aiaos-cli-fallback-chain (append fallback '())))))))))))
+
+(defun aiaos-cli--provider-info (name)
+  "Return (base-url api-key model-id) for NAME."
+  (gethash name aiaos-cli-providers))
+
+(defun aiaos-cli--switch-provider (name)
+  "Switch to provider NAME."
+  (when (gethash name aiaos-cli-providers)
+    (setf aiaos-cli-current-provider name)
+    (let ((info (gethash name aiaos-cli-providers)))
+      (setf aiaos-cli-current-model (nth 2 info)))
+    t))
+
+(defun aiaos-cli--append-output (&rest strings)
+  "Insert STRINGS at end of buffer."
+  (goto-char (point-max))
+  (insert (apply #'concat strings))
+  (goto-char (point-max)))
+
+(defun aiaos-cli--insert-prompt ()
+  "Insert input prompt."
+  (aiaos-cli--append-output "\n> "))
+
+(defun aiaos-cli--consume-input ()
+  "Consume input from beginning to current point."
+  (let ((start (line-beginning-position)))
+    (let ((input (buffer-substring (1+ start) (point))))
+      (delete-region start (point))
+      (aiaos-cli--insert-prompt)
+      input)))
+
+(defun aiaos-cli--parse-response (resp)
+  "Extract content from JSON response RESP."
+  (let ((choices (gethash "choices" resp)))
+    (when choices
+      (let ((first-choice (elt choices 0)))
+        (let ((message (gethash "message" first-choice)))
+          (let ((content (gethash "content" message)))
+            content))))))
+
+(defun aiaos-cli--call-llm (messages)
+  "Call LLM API with MESSAGES."
+  (let* ((provider aiaos-cli-current-provider)
+         (model-id aiaos-cli-current-model)
+         (info (aiaos-cli--provider-info provider)))
+    (unless (and provider model-id info)
+      (aiaos-cli--append-output "\n[AIAOS] No provider configured\n")
+      (return-from aiaos-cli--call-llm nil))
+    (let* ((base-url (nth 0 info))
+           (api-key (nth 1 info))
+           (url (concat base-url "/chat/completions"))
+           (body (json-encode
+                  (list :model model-id
+                        :messages (mapcar (lambda (m) (list :role (car m) :content (cdr m))) (nreverse messages))
+                        :temperature aiaos-cli-temperature
+                        :max_tokens aiaos-cli-max-tokens)))
+           (bodyfile (make-temp-file "aiaos-cli-body-"))
+           (respfile (make-temp-file "aiaos-cli-resp-")))
+      (with-temp-buffer
+        (insert body)
+        (write-region (point-min) (point-max) bodyfile nil 'noerror))
+      (unwind-protect
+          (let ((exit (call-process "curl" nil t nil "-s" "-w" "%{http_code}" "-X" "POST" url "-H" (format "Authorization: Bearer %s" api-key) "-H" "Content-Type: application/json" "-d" (format "@%s" bodyfile) "-o" respfile)))
+            (when (eq exit 0)
+              (with-temp-buffer
+                (insert-file-contents respfile)
+                (let ((resp (json-parse-string (buffer-string) :object-type 'hash-table)))
+                  (let ((content (aiaos-cli--parse-response resp)))
+                    (when content
+                      (aiaos-cli--append-output (concat content "\n"))))))))
+        (delete-file bodyfile)
+        (delete-file respfile)))))
+
+(defun aiaos-cli--handle-return ()
+  "Handle return key."
+  (interactive)
+  (when aiaos-cli--busy
+    (message "AIAOS: busy")
+    (return))
+  (let ((input (aiaos-cli--consume-input)))
+    (cond
+     ((string= input "")
+      (aiaos-cli--insert-prompt))
+     ((string-prefix-p "/" input)
+      (aiaos-cli--handle-command input))
+     (t
+      (push (cons "user" input) aiaos-cli--conversation)
+      (aiaos-cli--append-output "\n[thinking]...")
+      (let ((old-point (point)))
+        (setf aiaos-cli--busy t)
+        (run-at-timer 0.1 nil
+                     (lambda ()
+                       (with-current-buffer (current-buffer)
+                         (delete-region old-point (point-max))
+                         (aiaos-cli--append-output "\n[assistant] ")
+                         (aiaos-cli--call-llm aiaos-cli--conversation)
+                         (setf aiaos-cli--busy nil)
+                         (aiaos-cli--insert-prompt)))))))))
+
+(defun aiaos-cli--handle-command (cmd)
+  "Handle slash command."
+  (let ((cmd-line (split-string cmd " ")))
+    (cond
+     ((string= (car cmd-line) "/help")
+      (aiaos-cli--append-output "\nCommands:\n  /help - show help\n  /quit - quit\n  /reset - reset\n  /history - history\n  /providers - list\n  /switch <provider> - switch provider\n  /model <model> - switch model\n"))
+     ((string= (car cmd-line) "/quit")
+      (aiaos-cli-quit))
+     ((string= (car cmd-line) "/reset")
+      (aiaos-cli-reset))
+     ((string= (car cmd-line) "/history")
+      (aiaos-cli--append-output "\nConversation:\n")
+      (dolist (msg (reverse aiaos-cli--conversation))
+        (aiaos-cli--append-output (format "[%s] %s\n" (car msg) (cdr msg)))))
+     ((string= (car cmd-line) "/providers")
+      (aiaos-cli-list-providers))
+     ((string= (car cmd-line) "/switch")
+      (if (cdr cmd-line)
+          (if (aiaos-cli--switch-provider (cadr cmd-line))
+              (aiaos-cli--append-output (format "\n[AIAOS] Switched to %s\n" (cadr cmd-line)))
+            (aiaos-cli--append-output (format "\n[AIAOS] Provider '%s' not found\n" (cadr cmd-line))))
+        (aiaos-cli--append-output "\nUsage: /switch <provider-name>\n")))
+     ((string= (car cmd-line) "/model")
+      (if (cdr cmd-line)
+          (progn
+            (setf aiaos-cli-current-model (cadr cmd-line))
+            (aiaos-cli--append-output (format "\n[AIAOS] Model switched to %s\n" (cadr cmd-line))))
+        (aiaos-cli--append-output "\nUsage: /model <model-name>\n")))
+     (t
+      (aiaos-cli--append-output (format "\n[AIAOS] Unknown command: %s\n" (car cmd-line)))))))
+
+(defun aiaos-cli-list-providers ()
+  "List available providers."
+  (interactive)
+  (aiaos-cli--append-output "\nAvailable providers:\n")
+  (maphash (lambda (name info)
+             (let ((is-current (string= name aiaos-cli-current-provider)))
+               (aiaos-cli--append-output (format "  %s%s (model: %s)\n" (if is-current "* " "  ") name (nth 2 info)))))
+           aiaos-cli-providers)
+  (aiaos-cli--append-output "\n"))
+
+(defun aiaos-cli-quit ()
+  "Quit AIAOS CLI."
+  (interactive)
+  (kill-buffer (current-buffer)))
+
+(defun aiaos-cli-reset ()
+  "Reset conversation."
+  (interactive)
+  (setf aiaos-cli--conversation '())
+  (aiaos-cli--append-output "\n[AIAOS] Conversation reset\n"))
+
+(defun aiaos-cli-help ()
+  "Show help."
+  (interactive)
+  (aiaos-cli--handle-command "/help"))
+
+(defvar aiaos-cli-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'aiaos-cli--handle-return)
+    (define-key map (kbd "C-c C-k") #'aiaos-cli-quit)
+    (define-key map (kbd "C-c C-p") #'aiaos-cli-list-providers)
+    (define-key map (kbd "C-c C-r") #'aiaos-cli-reset)
+    (define-key map (kbd "C-c C-h") #'aiaos-cli-help)
+    map))
+
+(defun aiaos-cli ()
+  "Open AIAOS CLI."
+  (interactive)
+  (if (not aiaos-cli-providers)
+      (aiaos-cli--import-providers))
+  (let ((buf (get-buffer-create "*aiaos-cli*")))
+    (switch-to-buffer buf)
+    (aiaos-cli-mode)
+    (aiaos-cli--append-output "\n[AIAOS] Welcome! Type /help for commands.\n")
+    (when aiaos-cli-current-provider
+      (aiaos-cli--append-output (format "Current provider: %s\n" aiaos-cli-current-provider)))
+    (aiaos-cli--insert-prompt)))
+
+(define-derived-mode aiaos-cli-mode special-mode "AIAOS CLI"
+  "AIAOS CLI mode."
+  (use-local-map aiaos-cli-mode-map)
+  (setq buffer-read-only nil))
+
+(provide 'aiaos-cli)

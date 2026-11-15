@@ -1,0 +1,434 @@
+;;; aiaos-cli.el --- AIAOS CLI for Emacs with Three-Layer Architecture -*- lexical-binding: t -*-
+
+;; Copyright (C) 2024 AIAOS Team
+;; Version: 4.0.0
+;; Keywords: aiaos, cli, agent, llm, self-healing
+
+;;; Commentary:
+;; AIAOS CLI for Emacs - Three-Layer Architecture:
+;;
+;; Layer 1 (Foundation):      Core primitives, buffer management, input capture
+;; Layer 2 (Matrix Analysis): Multi-dimensional state analysis, error detection
+;; Layer 3 (Closed Loop):     Self-adapt, self-repair, self-construct, self-heal
+;;
+;; All three layers are activated together to provide an enterprise-grade
+;; agent CLI with continuous task execution capability.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'json)
+(require 'url)
+
+;; ============================================================================
+;; Layer 1: Foundation Layer - Core primitives and state
+;; ============================================================================
+
+(defgroup aiaos-cli nil
+  "AIAOS CLI for Emacs - Three-Layer Architecture."
+  :group 'tools
+  :prefix "aiaos-cli-")
+
+(defcustom aiaos-cli-default-provider "moonshot"
+  "Default LLM provider to use."
+  :type 'string
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-default-model "moonshot-v1-8k"
+  "Default LLM model to use."
+  :type 'string
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-temperature 0.7
+  "Temperature for LLM responses."
+  :type 'number
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-max-tokens 2048
+  "Maximum tokens for LLM responses."
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-api-key nil
+  "API key for the LLM provider. If nil, read from env var.")
+
+(defcustom aiaos-cli-api-base "https://api.moonshot.cn/v1"
+  "Base URL for the LLM provider API."
+  :type 'string
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-timeout 60
+  "HTTP request timeout in seconds."
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-self-heal t
+  "Enable self-healing layer."
+  :type 'boolean
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-auto-retry 3
+  "Maximum retry count for failed LLM calls."
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defvar aiaos-cli--conversation '()
+  "Conversation history: list of (role . content) pairs.")
+
+(defvar aiaos-cli--input-start nil
+  "Buffer-local: position where the current input line starts.")
+(make-variable-buffer-local 'aiaos-cli--input-start)
+
+(defvar aiaos-cli--mode-active nil
+  "Whether aiaos-cli-mode is currently active.")
+
+(defvar aiaos-cli--error-log '()
+  "Recent errors for self-healing analysis.")
+
+(defvar aiaos-cli--llm-ready nil
+  "Whether LLM provider is initialized.")
+
+(defvar aiaos-cli--last-error nil
+  "Most recent error message.")
+
+(defvar aiaos-cli--retry-count 0
+  "Current retry count for the active task.")
+
+;; ============================================================================
+;; Layer 2: Matrix Analysis Layer - Multi-dimensional state analysis
+;; ============================================================================
+
+(defun aiaos-cli--analyze-state ()
+  "Multi-dimensional state analysis. Returns a plist describing current state."
+  (let* ((buf (current-buffer))
+         (mode-ok (eq major-mode 'aiaos-cli-mode))
+         (has-prompt (not (null aiaos-cli--input-start)))
+         (buf-size (buffer-size buf))
+         (llm-ready aiaos-cli--llm-ready)
+         (api-key-present (or aiaos-cli-api-key
+                              (getenv "MOONSHOT_API_KEY")
+                              (getenv "OPENAI_API_KEY")))
+         (conversation-len (length aiaos-cli--conversation))
+         (recent-errors (length aiaos-cli--error-log)))
+    `(:mode-ok ,mode-ok
+       :has-prompt ,has-prompt
+       :buf-size ,buf-size
+       :llm-ready ,llm-ready
+       :api-key-present ,api-key-present
+       :conversation-len ,conversation-len
+       :recent-errors ,recent-errors)))
+
+(defun aiaos-cli--diagnose (state)
+  "Diagnose problems from STATE. Returns list of issue descriptions."
+  (let ((issues '()))
+    (unless (plist-get state :mode-ok)
+      (push "major-mode is not aiaos-cli-mode" issues))
+    (unless (plist-get state :has-prompt)
+      (push "no active prompt in buffer" issues))
+    (unless (plist-get state :llm-ready)
+      (push "LLM provider not initialized" issues))
+    (unless (plist-get state :api-key-present)
+      (push "no API key configured" issues))
+    (when (> (plist-get state :recent-errors) 5)
+      (push "high error rate detected" issues))
+    (nreverse issues)))
+
+(defun aiaos-cli--log-state (state)
+  "Log current STATE to *AIAOS Debug* buffer for diagnostics."
+  (with-current-buffer (get-buffer-create "*AIAOS Debug*")
+    (goto-char (point-max))
+    (insert (format-time-string "[%Y-%m-%d %H:%M:%S] ")
+            (json-encode state) "\n")))
+
+;; ============================================================================
+;; Layer 3: Closed Loop Layer - Self-adapt, self-repair, self-construct
+;; ============================================================================
+
+(defun aiaos-cli--record-error (msg)
+  "Record an error for self-healing analysis."
+  (setq aiaos-cli--last-error msg)
+  (setq aiaos-cli--error-log
+        (append aiaos-cli--error-log
+                (list (list (current-time-string) msg)))
+        (when (> (length aiaos-cli--error-log) 20)
+          (list (nth 20 aiaos-cli--error-log)))))
+
+(defun aiaos-cli--self-repair (state issues)
+  "Attempt to self-repair issues found in STATE."
+  (when aiaos-cli-self-heal
+    (dolist (issue issues)
+      (cond
+       ((string-match "major-mode" issue)
+        (aiaos-cli-mode))
+       ((string-match "no active prompt" issue)
+        (aiaos-cli--insert-prompt))
+       ((string-match "LLM provider not initialized" issue)
+        (condition-case err
+            (aiaos-cli--init-llm)
+          (error nil)))
+       ((string-match "no API key" issue)
+        (let ((key (or (getenv "MOONSHOT_API_KEY")
+                       (getenv "OPENAI_API_KEY"))))
+          (when key
+            (set-default 'aiaos-cli-api-key key))))))))
+
+(defun aiaos-cli--self-construct ()
+  "Self-construct: ensure all required infrastructure exists."
+  (get-buffer-create "*AIAOS Debug*")
+  (unless (get-buffer "*AIAOS Conversation*")
+    (with-current-buffer (get-buffer-create "*AIAOS Conversation*")
+      (insert "=== AIAOS Conversation History ===\n\n"))))
+
+(defun aiaos-cli--init-llm ()
+  "Initialize LLM provider. Sets aiaos-cli--llm-ready."
+  (let ((key (or aiaos-cli-api-key
+                 (getenv "MOONSHOT_API_KEY")
+                 (getenv "OPENAI_API_KEY"))))
+    (unless key
+      (error "No API key found. Set aiaos-cli-api-key or MOONSHOT_API_KEY env var."))
+    (setq aiaos-cli--llm-ready t)
+    (message "AIAOS CLI: LLM provider '%s' initialized with model '%s'"
+             aiaos-cli-default-provider aiaos-cli-default-model)))
+
+(defun aiaos-cli--llm-chat (messages model temperature max-tokens)
+  "Send MESSAGES to LLM and return response string. Raises error on failure."
+  (let* ((key (or aiaos-cli-api-key
+                  (getenv "MOONSHOT_API_KEY")
+                  (getenv "OPENAI_API_KEY")))
+         (payload (json-encode
+                   `(:model ,model
+                     :messages ,messages
+                     :temperature ,temperature
+                     :max_tokens ,max-tokens)))
+         (url (concat aiaos-cli-api-base "/chat/completions")))
+    (condition-case err
+        (let ((response (url-retrieve-synchronously
+                         url
+                         t
+                         nil
+                         `(("Authorization" . ,(concat "Bearer " key))
+                           ("Content-Type" . "application/json")
+                           ("Accept" . "application/json"))
+                         payload)))
+          (when (buffer-live-p response)
+            (with-current-buffer response
+              (goto-char (point-max))
+              (re-search-backward "\n\n" nil t)
+              (let ((body (buffer-substring (point) (point-max))))
+                (let ((parsed (json-read-from-string body)))
+                  (if (assoc 'error parsed)
+                      (error "LLM API error: %s" (getf parsed 'error))
+                    (getf (getf parsed 'choices) 'content))))))
+      (error
+       (error "LLM request failed: %s" (error-message-string err)))))
+
+(defun aiaos-cli--conversation-to-messages (conv)
+  "Convert conversation list to LLM message format."
+  (let ((msgs '()))
+    (dolist (entry conv)
+      (push (list :role (car entry) :content (cdr entry)) msgs))
+    (nreverse msgs)))
+
+(defun aiaos-cli--log-conversation ()
+  "Log conversation to *AIAOS Conversation* buffer."
+  (with-current-buffer (get-buffer-create "*AIAOS Conversation*")
+    (goto-char (point-max))
+    (dolist (entry (reverse aiaos-cli--conversation))
+      (insert (format "[%s] %s\n" (car entry) (cdr entry)))
+      (insert "\n"))))
+
+(defun aiaos-cli--do-send (input)
+  "Actually send INPUT to LLM provider. Raises error on failure."
+  (aiaos-cli--append-output (format "You: %s\n" input))
+  (push (cons "user" input) aiaos-cli--conversation)
+  (aiaos-cli--append-output "AIAOS: ")
+  (let ((response (aiaos-cli--llm-chat
+                   (aiaos-cli--conversation-to-messages aiaos-cli--conversation)
+                   aiaos-cli-default-model
+                   aiaos-cli-temperature
+                   aiaos-cli-max-tokens)))
+    (if (and response (not (string-empty-p response)))
+        (progn
+          (aiaos-cli--append-output (concat response "\n\n"))
+          (push (cons "assistant" response) aiaos-cli--conversation)
+          (aiaos-cli--log-conversation))
+      (error "Empty response from LLM"))))
+
+(defun aiaos-cli--safe-send (input)
+  "Send INPUT with retry and self-healing. Returns t on success."
+  (let ((state (aiaos-cli--analyze-state))
+        (issues (aiaos-cli--diagnose state))
+        (attempts 0)
+        (success nil))
+    (when (and (not (null issues)) aiaos-cli-self-heal)
+      (aiaos-cli--self-repair state issues))
+    (while (and (< attempts aiaos-cli-auto-retry) (not success))
+      (incf attempts)
+      (condition-case err
+          (progn
+            (aiaos-cli--do-send input)
+            (setq success t))
+        (error
+         (aiaos-cli--record-error
+          (format "Attempt %d/%d failed: %s"
+                  attempts aiaos-cli-auto-retry
+                  (error-message-string err)))
+         (when (< attempts aiaos-cli-auto-retry)
+           (sit-for 1))))
+      (setq aiaos-cli--retry-count attempts))
+    success))
+
+;; ============================================================================
+;; Mode and Keybindings
+;; ============================================================================
+
+(defun aiaos-cli--welcome ()
+  "Insert welcome banner."
+  (insert "AIAOS CLI for Emacs - Three-Layer Architecture\n")
+  (insert "=============================================\n")
+  (insert "  Layer 1: Foundation     [ACTIVE]\n")
+  (insert "  Layer 2: Matrix Analysis [ACTIVE]\n")
+  (insert "  Layer 3: Closed Loop     [ACTIVE]\n")
+  (insert "\nType a message and press RET to send.\n")
+  (insert "Commands: /help, /quit, /reset, /history, /status, /heal\n\n"))
+
+(defun aiaos-cli--insert-prompt ()
+  "Insert a fresh prompt and record its start position."
+  (save-excursion
+    (goto-char (point-max))
+    (unless (bolp)
+      (insert "\n"))
+    (insert "> ")
+    (set (make-local-variable 'aiaos-cli--input-start) (point))))
+
+(defun aiaos-cli--append-output (&rest strings)
+  "Append STRINGS to the end of the buffer."
+  (save-excursion
+    (goto-char (point-max))
+    (dolist (s strings)
+      (insert (if (stringp s) s (prin1-to-string s))))))
+
+(defun aiaos-cli--get-input ()
+  "Return trimmed text on current prompt line, or nil if empty."
+  (unless aiaos-cli--input-start
+    nil)
+  (let ((pt-end (point))
+        (pt-start (min aiaos-cli--input-start pt-end))
+        (text (buffer-substring-no-properties pt-start pt-end)))
+    (when (string-trim text)
+      text)))
+
+(defun aiaos-cli--consume-input ()
+  "Delete the current prompt line and insert a new prompt."
+  (when aiaos-cli--input-start
+    (save-excursion
+      (goto-char aiaos-cli--input-start)
+      (beginning-of-line)
+      (delete-region (point)
+                     (min (point-max) (1+ (line-end-position))))))
+  (aiaos-cli--insert-prompt))
+
+(defun aiaos-cli--handle-command (cmd)
+  "Handle slash command CMD."
+  (cond
+   ((string-equal cmd "/help")
+    (aiaos-cli--append-output
+     "\nAvailable commands:\n"
+     "  /help    - Show this help\n"
+     "  /quit    - Exit AIAOS CLI\n"
+     "  /reset   - Reset conversation\n"
+     "  /history - Show conversation history\n"
+     "  /status  - Show system status\n"
+     "  /heal    - Trigger self-healing\n\n"))
+   ((string-equal cmd "/quit")
+    (aiaos-cli--append-output "Goodbye!\n")
+    (kill-buffer (current-buffer)))
+   ((string-equal cmd "/reset")
+    (setq aiaos-cli--conversation '())
+    (aiaos-cli--append-output "Conversation reset.\n\n"))
+   ((string-equal cmd "/history")
+    (aiaos-cli--append-output "\n--- Conversation History ---\n")
+    (dolist (entry (reverse aiaos-cli--conversation))
+      (aiaos-cli--append-output
+       (format "[%s] %s\n" (car entry) (cdr entry))))
+    (aiaos-cli--append-output "--- End of History ---\n\n"))
+   ((string-equal cmd "/status")
+    (let ((state (aiaos-cli--analyze-state)))
+      (aiaos-cli--append-output "\n--- System Status ---\n")
+      (dolist (k '(mode-ok has-prompt llm-ready api-key-present
+                          conversation-len recent-errors))
+        (aiaos-cli--append-output
+         (format "  %-20s %s\n" k (plist-get state k))))
+      (aiaos-cli--append-output "--- End of Status ---\n\n")))
+   ((string-equal cmd "/heal")
+    (let ((state (aiaos-cli--analyze-state))
+          (issues (aiaos-cli--diagnose state)))
+      (aiaos-cli--append-output "\n--- Self-Healing ---\n")
+      (if (null issues)
+          (aiaos-cli--append-output "  System healthy. No issues found.\n\n")
+        (dolist (issue issues)
+          (aiaos-cli--append-output (format "  [ISSUE] %s\n" issue)))
+        (aiaos-cli--self-repair state issues)
+        (aiaos-cli--append-output "  Self-repair attempted.\n\n")))
+    (aiaos-cli--log-state (aiaos-cli--analyze-state)))
+   (t
+    (aiaos-cli--append-output
+     (format "\nUnknown command: %s\nUse /help for available commands.\n\n" cmd)))))
+
+(defun aiaos-cli--send-message ()
+  "Send current input as a message to LLM."
+  (interactive)
+  (let ((input (aiaos-cli--get-input)))
+    (when input
+      (aiaos-cli--consume-input)
+      (if (string-prefix-p "/" input)
+          (aiaos-cli--handle-command (string-trim input))
+        (let ((state (aiaos-cli--analyze-state)))
+          (aiaos-cli--log-state state)
+          (if (aiaos-cli--safe-send input)
+              (aiaos-cli--append-output "")
+            (aiaos-cli--append-output
+             (format "\n[ERROR] Failed to send message after %d attempts.\n"
+                     aiaos-cli--retry-count)
+             (format "[LAST ERROR] %s\n\n" aiaos-cli--last-error))))))))
+
+(defun aiaos-cli-mode ()
+  "Major mode for AIAOS CLI buffer."
+  (interactive)
+  (kill-all-local-variables)
+  (setq major-mode 'aiaos-cli-mode)
+  (setq mode-name "AIAOS-CLI")
+  (setq aiaos-cli--mode-active t)
+  (local-set-key (kbd "RET") 'aiaos-cli--send-message)
+  (local-set-key (kbd "C-c C-c") 'aiaos-cli--send-message)
+  (local-set-key (kbd "C-c C-s") (lambda () (interactive) (aiaos-cli--handle-command "/status")))
+  (local-set-key (kbd "C-c C-h") (lambda () (interactive) (aiaos-cli--handle-command "/heal")))
+  (local-set-key (kbd "C-c C-r") (lambda () (interactive) (aiaos-cli--handle-command "/reset")))
+  (aiaos-cli--self-construct))
+
+;; ============================================================================
+;; Public Entry Point
+;; ============================================================================
+
+(defun aiaos ()
+  "Open or switch to the AIAOS CLI buffer."
+  (interactive)
+  (aiaos-cli--self-construct)
+  (with-current-buffer (get-buffer-create "*AIAOS CLI*")
+    (unless (eq major-mode 'aiaos-cli-mode)
+      (aiaos-cli-mode)
+      (erase-buffer)
+      (aiaos-cli--welcome)
+      (condition-case err
+          (aiaos-cli--init-llm)
+        (error
+         (aiaos-cli--append-output
+          (format "\n[WARNING] LLM init failed: %s\n" (error-message-string err))
+          "You can still use /help, /status, /heal commands.\n\n")))
+      (aiaos-cli--insert-prompt))
+    (switch-to-buffer (current-buffer)))
+  (aiaos-cli--log-state (aiaos-cli--analyze-state)))
+
+(provide 'aiaos-cli)
+
+;;; aiaos-cli.el ends here

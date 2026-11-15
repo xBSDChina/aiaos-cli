@@ -1,0 +1,143 @@
+;;; aiaos-cli-config.el --- AIAOS CLI Configuration -*- lexical-binding: t; -*-
+
+;; This module provides configuration management for AIAOS CLI.
+
+(provide 'aiaos-cli-config)
+
+(defgroup aiaos-cli-config nil
+  "AIAOS CLI Configuration"
+  :group 'aiaos-cli
+  :prefix "aiaos-cli-config-")
+
+(defcustom aiaos-cli-theme "dark"
+  "Theme for AIAOS CLI interface."
+  :type '(choice (const dark) (const light))
+  :group 'aiaos-cli-config)
+
+(defcustom aiaos-cli-auto-start nil
+  "Automatically start AIAOS CLI on Emacs startup."
+  :type 'boolean
+  :group 'aiaos-cli-config)
+
+(defcustom aiaos-cli-log-level "info"
+  "Logging level for AIAOS CLI."
+  :type '(choice (const debug) (const info) (const warn) (const error))
+  :group 'aiaos-cli-config)
+
+(defcustom aiaos-cli-default-model "gpt-3.5-turbo"
+  "Default LLM model to use."
+  :type 'string
+  :group 'aiaos-cli-config)
+
+(defcustom aiaos-cli-provider-switch-confirmation t
+  "Require confirmation when switching LLM providers."
+  :type 'boolean
+  :group 'aiaos-cli-config)
+
+(defvar aiaos-cli--initialized nil
+  "Whether AIAOS CLI has been initialized.")
+
+
+;;; Configuration Functions
+
+(defun aiaos-cli--validate-config ()
+  "Validate AIAOS CLI configuration."
+  (let ((errors nil))
+    (when (and (not aiaos-cli-openai-api-key)
+               (not aiaos-cli-anthropic-api-key)
+               (not aiaos-cli-google-api-key))
+      (push "No LLM API keys configured" errors))
+    (when (and aiaos-cli-temperature (< aiaos-cli-temperature 0)
+               (> aiaos-cli-temperature 1))
+      (push "Temperature must be between 0 and 1" errors))
+    (when (< aiaos-cli-max-tokens 100)
+      (push "Max tokens must be at least 100" errors))
+    (if errors
+        (progn
+          (aiaos-cli--log "error" (concat "Configuration errors: " (string-join errors ", ")))
+          nil)
+      (aiaos-cli--log "info" "Configuration validated successfully")
+      t)))
+
+(defun aiaos-cli--save-config ()
+  "Save current configuration to file."
+  (let ((config-file (expand-file-name ".aiaos/config.json" aiaos-cli-config-dir))
+        (config `(("openai-api-key" . ,aiaos-cli-openai-api-key)
+                  ("anthropic-api-key" . ,aiaos-cli-anthropic-api-key)
+                  ("google-api-key" . ,aiaos-cli-google-api-key)
+                  ("ollama-api-url" . ,aiaos-cli-ollama-api-url)
+                  ("temperature" . ,aiaos-cli-temperature)
+                  ("max-tokens" . ,aiaos-cli-max-tokens)
+                  ("default-provider" . ,aiaos-cli-default-provider)
+                  ("theme" . ,aiaos-cli-theme)
+                  ("log-level" . ,aiaos-cli-log-level))))
+    (make-directory (file-name-directory config-file) t)
+    (write-file config-file (json-encode config))
+    (aiaos-cli--log "info" "Configuration saved successfully")))
+
+(defun aiaos-cli--load-config ()
+  "Load configuration from file."
+  (let ((config-file (expand-file-name ".aiaos/config.json" aiaos-cli-config-dir)))
+    (when (file-exists-p config-file)
+      (let ((content (read-file config-file)))
+        (when content
+          (let ((config (json-parse-string content :object-type 'alist)))
+            (setf (alist-get 'openai-api-key config) aiaos-cli-openai-api-key)
+            (setf (alist-get 'anthropic-api-key config) aiaos-cli-anthropic-api-key)
+            (setf (alist-get 'google-api-key config) aiaos-cli-google-api-key)
+            (setf (alist-get 'ollama-api-url config) aiaos-cli-ollama-api-url)
+            (setf (alist-get 'temperature config) aiaos-cli-temperature)
+            (setf (alist-get 'max-tokens config) aiaos-cli-max-tokens)
+            (setf (alist-get 'default-provider config) aiaos-cli-default-provider)
+            (setf (alist-get 'theme config) aiaos-cli-theme)
+            (setf (alist-get 'log-level config) aiaos-cli-log-level))
+          (aiaos-cli--log "info" "Configuration loaded successfully")))))))
+
+(defun aiaos-cli--reset-config ()
+  "Reset configuration to defaults."
+  (interactive)
+  (setq aiaos-cli-openai-api-key nil)
+  (setq aiaos-cli-anthropic-api-key nil)
+  (setq aiaos-cli-google-api-key nil)
+  (setq aiaos-cli-ollama-api-url "http://localhost:11434")
+  (setq aiaos-cli-temperature 0.7)
+  (setq aiaos-cli-max-tokens 2048)
+  (setq aiaos-cli-default-provider "openai")
+  (setq aiaos-cli-theme "dark")
+  (setq aiaos-cli-log-level "info")
+  (aiaos-cli--save-config)
+  (aiaos-cli--append-output "✓ Configuration reset to defaults.")
+  (aiaos-cli--refresh-status))
+
+
+;;; Logging
+
+(defun aiaos-cli--log (level message)
+  "Log a message with the specified level."
+  (let ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
+    (cond
+      ((string= level "debug")
+       (when (string= aiaos-cli-log-level "debug")
+         (aiaos-cli--append-output (format "[DEBUG] %s: %s" timestamp message))))
+      ((string= level "info")
+       (when (or (string= aiaos-cli-log-level "info")
+                 (string= aiaos-cli-log-level "debug"))
+         (aiaos-cli--append-output (format "[INFO] %s: %s" timestamp message))))
+      ((string= level "warn")
+       (aiaos-cli--append-output (format "[WARN] %s: %s" timestamp message)))
+      ((string= level "error")
+       (aiaos-cli--append-output (format "[ERROR] %s: %s" timestamp message))))))
+
+
+;;; Initialization
+
+(defun aiaos-cli--init ()
+  "Initialize AIAOS CLI with configuration."
+  (unless aiaos-cli--initialized
+    (aiaos-cli--load-config)
+    (aiaos-cli--validate-config)
+    (setq aiaos-cli--initialized t)
+    (aiaos-cli--log "info" "AIAOS CLI initialized successfully")))
+
+(provide 'aiaos-cli-config)
+;;; aiaos-cli-config.el ends here

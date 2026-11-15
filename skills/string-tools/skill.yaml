@@ -1,0 +1,83 @@
+name: "string-tools"
+version: "1.0.0"
+description: "AIAOS-CLI 字符串处理技能包：反转、去空白、填充、重复"
+author: "AIAOS Project"
+license: "MIT"
+keywords: ["string", "utils", "productivity"]
+
+dependencies:
+  core: ">=1.0.0"
+  skills: []
+  system:
+    - "emacs>=29"
+
+commands:
+  - name: "reverse"
+    entry: "commands/reverse.el"
+    description: "反转字符串"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待反转的字符串"
+
+  - name: "trim"
+    entry: "commands/trim.el"
+    description: "去除字符串首尾空白"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待处理的字符串"
+    options:
+      - name: "--side"
+        short: "-s"
+        type: "string"
+        description: "去除侧边 (both|left|right)"
+        default: "both"
+
+  - name: "pad"
+    entry: "commands/pad.el"
+    description: "将字符串填充到指定长度"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待填充的字符串"
+      - name: "length"
+        type: "integer"
+        required: true
+        description: "目标长度"
+    options:
+      - name: "--char"
+        short: "-c"
+        type: "string"
+        description: "填充字符"
+        default: " "
+      - name: "--align"
+        short: "-a"
+        type: "string"
+        description: "对齐方式 (left|center|right)"
+        default: "right"
+
+  - name: "repeat"
+    entry: "commands/repeat.el"
+    description: "重复字符串指定次数"
+    args:
+      - name: "text"
+        type: "string"
+        required: true
+        description: "待重复的字符串"
+      - name: "times"
+        type: "integer"
+        required: true
+        description: "重复次数"
+
+hooks:
+  pre-command: "hooks/pre-command.el"
+  post-command: "hooks/post-command.el"
+  on-load: "hooks/on-load.el"
+
+resources:
+  templates: []
+  schemas: []

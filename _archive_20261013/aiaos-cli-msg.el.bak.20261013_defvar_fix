@@ -1,0 +1,183 @@
+;;; aiaos-cli-msg.el --- Message Flow -*- lexical-binding: t; -*-
+
+;; This module implements AIAOS message flow capabilities.
+
+(provide 'aiaos-cli-msg)
+(require 'aiaos-cli)
+
+(defgroup aiaos-cli-msg nil
+  "AIAOS CLI Message Flow"
+  :group 'aiaos-cli
+  :prefix "aiaos-cli-msg-")
+
+(defcustom aiaos-cli-msg-history-size 100
+  "Maximum size of message history."
+  :type 'integer
+  :group 'aiaos-cli-msg)
+
+(defvar aiaos-cli--messages nil
+  "Message history.")
+
+(defvar aiaos-cli--active-conversation-id nil
+  "Currently active conversation ID.")
+
+(defvar aiaos-cli--conversation-history nil
+  "Conversation history for context.")
+
+
+;;; Message Operations
+
+(defun aiaos-cli--send-message (content &optional role)
+  "Send a message with optional role."
+  (let ((message (list :id (format "msg-%d" (length aiaos-cli--messages))
+                       :content content
+                       :role (or role "user")
+                       :timestamp (current-time))))
+    (push message aiaos-cli--messages)
+    (when aiaos-cli--active-conversation-id
+      (push message (alist-get aiaos-cli--active-conversation-id aiaos-cli--conversations)))
+    (aiaos-cli--append-output (format "[%s] %s" (alist-get :role message) content))
+    message))
+
+(defun aiaos-cli--receive-message (content &optional role)
+  "Receive a message from the system/agent."
+  (let ((message (list :id (format "msg-%d" (length aiaos-cli--messages))
+                       :content content
+                       :role (or role "assistant")
+                       :timestamp (current-time))))
+    (push message aiaos-cli--messages)
+    (when aiaos-cli--active-conversation-id
+      (push message (alist-get aiaos-cli--active-conversation-id aiaos-cli--conversations)))
+    (aiaos-cli--append-output (format "[%s] %s" (alist-get :role message) content))
+    message))
+
+(defun aiaos-cli--get-messages (&optional limit)
+  "Get recent messages."
+  (seq-take (nreverse aiaos-cli--messages) limit))
+(defun aiaos-cli--clear-messages ()
+  "Clear all messages."
+  (interactive)
+  (setq aiaos-cli--messages nil)
+  (aiaos-cli--append-output "✓ Message history cleared."))
+
+
+;;; Conversation Management
+
+(defun aiaos-cli--start-conversation (name)
+  "Start a new conversation."
+  (interactive)
+  (setq aiaos-cli--active-conversation-id (format "conv-%d" (length aiaos-cli--conversations)))
+  (let ((conversation (list :id aiaos-cli--active-conversation-id
+                            :name name
+                            :messages nil
+                            :created-at (current-time))))
+    (push conversation aiaos-cli--conversations)
+    (aiaos-cli--append-output (format "✓ Started new conversation: %s (ID: %s)" name aiaos-cli--active-conversation-id))
+    conversation))
+
+(defun aiaos-cli--switch-conversation (conv-id)
+  "Switch to a different conversation."
+  (interactive)
+  (if (aiaos-cli--find-conversation conv-id)
+      (progn
+        (setq aiaos-cli--active-conversation-id conv-id)
+        (aiaos-cli--append-output (format "✓ Switched to conversation: %s" conv-id))
+        (aiaos-cli--show-conversation conv-id))
+    (error "Conversation not found: %s" conv-id)))
+
+(defun aiaos-cli--end-conversation ()
+  "End the current conversation."
+  (interactive)
+  (when aiaos-cli--active-conversation-id
+    (aiaos-cli--append-output (format "✓ Ended conversation: %s" aiaos-cli--active-conversation-id))
+    (setq aiaos-cli--active-conversation-id nil)))
+
+(defun aiaos-cli--list-conversations ()
+  "List all conversations."
+  (interactive)
+  (aiaos-cli--append-output "=== Conversation List ===")
+  (dolist (conv aiaos-cli--conversations)
+    (let ((id (alist-get :id conv))
+          (name (alist-get :name conv))
+          (msg-count (length (alist-get :messages conv))))
+      (aiaos-cli--append-output (format "  [%s] %s (%d messages)" id name msg-count)))))
+
+(defun aiaos-cli--show-conversation (conv-id)
+  "Show messages in a conversation."
+  (interactive)
+  (let ((conv (aiaos-cli--find-conversation conv-id)))
+    (if conv
+        (progn
+          (aiaos-cli--append-output (format "=== Conversation: %s ===" (alist-get :name conv)))
+          (dolist (msg (alist-get :messages conv))
+            (aiaos-cli--append-output (format "[%s] %s" (alist-get :role msg) (alist-get :content msg))))
+          conv)
+      (error "Conversation not found: %s" conv-id))))
+
+(defun aiaos-cli--find-conversation (conv-id)
+  "Find a conversation by ID."
+  (seq-find (lambda (conv) (eq (alist-get :id conv) conv-id)) aiaos-cli--conversations))
+
+
+;;; Message Flow Operations
+
+(defun aiaos-cli--message-flow-start (flow-name)
+  "Start a message flow."
+  (interactive)
+  (let ((flow-id (format "mflow-%s-%d" flow-name (current-time)))
+        (flow-info (list :id flow-id
+                         :name flow-name
+                         :status "running"
+                         :messages nil
+                         :current-message 0)))
+    (push flow-info aiaos-cli--message-flows)
+    (aiaos-cli--append-output (format "✓ Message flow started: %s (ID: %s)" flow-name flow-id))
+    flow-id))
+
+(defun aiaos-cli--message-flow-send (flow-id message)
+  "Send a message in a message flow."
+  (interactive)
+  (let ((flow (aiaos-cli--find-message-flow flow-id)))
+    (if flow
+        (progn
+          (let ((msg (list :id (format "mmsg-%d" (length (alist-get :messages flow)))
+                           :content message
+                           :timestamp (current-time))))
+            (push msg (alist-get :messages flow))
+            (aiaos-cli--append-output (format "✓ Message sent in flow %s: %s" flow-id message))
+            (setf (alist-get :current-message flow) (+ 1 (alist-get :current-message flow))))
+          flow)
+      (error "Message flow not found: %s" flow-id))))
+
+(defun aiaos-cli--message-flow-receive (flow-id message)
+  "Receive a message in a message flow."
+  (interactive)
+  (let ((flow (aiaos-cli--find-message-flow flow-id)))
+    (if flow
+        (progn
+          (let ((msg (list :id (format "mmsg-%d" (length (alist-get :messages flow)))
+                           :content message
+                           :timestamp (current-time))))
+            (push msg (alist-get :messages flow))
+            (aiaos-cli--append-output (format "✓ Message received in flow %s: %s" flow-id message))
+            (setf (alist-get :current-message flow) (+ 1 (alist-get :current-message flow))))
+          flow)
+      (error "Message flow not found: %s" flow-id))))
+
+(defun aiaos-cli--message-flow-complete (flow-id)
+  "Complete a message flow."
+  (interactive)
+  (let ((flow (aiaos-cli--find-message-flow flow-id)))
+    (if flow
+        (progn
+          (setf (alist-get :status flow) "completed")
+          (aiaos-cli--append-output (format "✓ Message flow completed: %s" flow-id))
+          flow)
+      (error "Message flow not found: %s" flow-id))))
+
+(defun aiaos-cli--find-message-flow (flow-id)
+  "Find a message flow by ID."
+  (seq-find (lambda (flow) (eq (alist-get :id flow) flow-id)) aiaos-cli--message-flows))
+
+(provide 'aiaos-cli-msg)
+;;; aiaos-cli-msg.el ends here

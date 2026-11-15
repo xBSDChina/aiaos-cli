@@ -1,0 +1,128 @@
+;;; aiaos-cli-tracing.el --- Lightweight LLM call tracing -*- lexical-binding: t -*-
+
+;; Records spans for LLM calls. Mirrors Python lib/llm_tracing.py.
+;; Each span: (id provider model start end status tokens error)
+
+(require 'cl-lib)
+
+(defgroup aiaos-cli-tracing nil
+  "AIAOS CLI tracing"
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-tracing-log-file
+  (expand-file-name "~/.emacs.d/aiaos-cli/traces.log")
+  "File to persist trace spans."
+  :type 'file
+  :group 'aiaos-cli-tracing)
+
+(defcustom aiaos-cli-tracing-max-spans 500
+  "Maximum spans kept in memory."
+  :type 'integer
+  :group 'aiaos-cli-tracing)
+
+(defcustom aiaos-cli-tracing-enabled t
+  "Whether tracing is enabled."
+  :type 'boolean
+  :group 'aiaos-cli-tracing)
+
+(defvar aiaos-cli-tracing--spans '()
+  "In-memory span list (most recent first).")
+
+(defvar aiaos-cli-tracing--counter 0
+  "Monotonic span counter.")
+
+(defvar aiaos-cli-tracing--open-spans '()
+  "Alist of (span-id . span) for in-flight spans.")
+
+(defun aiaos-cli-tracing--now ()
+  "Return current time as a float number of seconds."
+  (float-time (current-time)))
+
+(defun aiaos-cli-tracing--gen-id ()
+  "Generate a unique span id."
+  (setq aiaos-cli-tracing--counter (1+ aiaos-cli-tracing--counter))
+  (format "span-%d-%s" aiaos-cli-tracing--counter
+          (format-time-string "%H%M%S")))
+
+(defun aiaos-cli-tracing--append-span (span)
+  "Prepend SPAN to the in-memory list and optionally log to file."
+  (push span aiaos-cli-tracing--spans)
+  (while (> (length aiaos-cli-tracing--spans) aiaos-cli-tracing-max-spans)
+    (pop aiaos-cli-tracing--spans))
+  (when aiaos-cli-tracing-enabled
+    (condition-case err
+        (let ((dir (file-name-directory aiaos-cli-tracing-log-file))
+              buf)
+          (when (file-directory-p dir)
+            (setq buf (find-file-noselect aiaos-cli-tracing-log-file))
+            (when buf
+              (with-current-buffer buf
+                (goto-char (point-max))
+                (insert (format "%s %s %s %s %s %s %s\n"
+                                (nth 1 span) (nth 2 span) (nth 3 span)
+                                (nth 4 span) (nth 5 span) (nth 6 span)
+                                (nth 7 span)))
+                (save-buffer)))))
+      (error nil))))
+
+(defun aiaos-cli-tracing-span-start (provider model)
+  "Start a new span for PROVIDER with MODEL. Returns span id."
+  (let ((id (aiaos-cli-tracing--gen-id))
+        (start (aiaos-cli-tracing--now))
+        (span (list id provider model start nil nil nil nil)))
+    (push (cons id span) aiaos-cli-tracing--open-spans)
+    id))
+
+(defun aiaos-cli-tracing-span-end (span-id &optional status tokens error)
+  "End the span with id SPAN-ID.
+STATUS is a string like \"ok\" or \"error\".
+TOKENS is an integer (optional).
+ERROR is a string (optional)."
+  (let ((entry (assoc span-id aiaos-cli-tracing--open-spans)))
+    (if (null entry)
+        "no-such-span"
+      (let ((span (cdr entry))
+            (end (aiaos-cli-tracing--now)))
+        (setf (nth 4 span) end
+              (nth 5 span) (or status "ok")
+              (nth 6 span) tokens
+              (nth 7 span) error)
+        (setq aiaos-cli-tracing--open-spans
+              (delete entry aiaos-cli-tracing--open-spans))
+        (aiaos-cli-tracing--append-span span)
+        (format "span %s ended (%s)" span-id (or status "ok"))))))
+
+(defun aiaos-cli-tracing-record (provider model duration status tokens error)
+  "Record a completed span directly (no start/end pairing needed)."
+  (let ((id (aiaos-cli-tracing--gen-id))
+        (now (aiaos-cli-tracing--now))
+        (span (list id provider model (- now duration) now
+                    status tokens error)))
+    (aiaos-cli-tracing--append-span span)
+    id))
+
+(defun aiaos-cli-tracing-recent (&optional n)
+  "Return the N most recent spans (default 10)."
+  (let ((n (or n 10)))
+    (if (> n (length aiaos-cli-tracing--spans))
+        aiaos-cli-tracing--spans
+      (let ((out '()))
+        (dotimes (i n)
+          (push (nth i aiaos-cli-tracing--spans) out))
+        (nreverse out)))))
+
+(defun aiaos-cli-tracing-status ()
+  "Return an alist summarizing tracing state."
+  (list :enabled aiaos-cli-tracing-enabled
+        :total-spans (length aiaos-cli-tracing--spans)
+        :open-spans (length aiaos-cli-tracing--open-spans)
+        :log-file aiaos-cli-tracing-log-file))
+
+(defun aiaos-cli-tracing-clear ()
+  "Clear all in-memory spans."
+  (setq aiaos-cli-tracing--spans '())
+  (setq aiaos-cli-tracing--open-spans '())
+  "cleared")
+
+(provide 'aiaos-cli-tracing)
+;;; aiaos-cli-tracing.el ends here
