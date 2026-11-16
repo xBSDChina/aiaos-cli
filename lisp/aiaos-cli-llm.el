@@ -31,6 +31,8 @@
   "AIAOS LLM provider management."
   :group 'aiaos-cli)
 
+(defvar aiaos-llm-max-tokens "Upper bound of LLM output tokens.")
+
 (defcustom aiaos-llm-providers nil
   "List of LLM provider configurations.
 Each element is a list: (name endpoint model api-key &optional options)."
@@ -164,41 +166,33 @@ Each element is a list: (name endpoint model api-key &optional options)."
 ;;; Provider 状态探测
 
 (defun aiaos-llm-probe-provider (provider)
-  "Probe the status of PROVIDER.
-Returns one of: :healthy, :unstable, :down"
+  "Probe PROVIDER with a real minimal chat request (synchronous).
+
+200 -> :healthy  (endpoint 与 model 均可用)
+4xx/5xx -> :unstable (可达但拒绝；model 不可用也归此类，切换时跳过)
+nil/连接失败 -> :down"
   (let* ((name (cdr (assq :name provider)))
-         (endpoint (cdr (assq :endpoint provider)))
-         (api-key (cdr (assq :api-key provider)))
-         (model (cdr (assq :model provider)))
          (url (aiaos-llm-build-request-url provider))
          (headers (aiaos-llm-build-request-headers provider))
-         (request-data (aiaos-llm-build-request-data provider "ping" nil))
-         (start-time (float-time))
-         (timeout aiaos-llm-provider-timeout)
-         (response nil)
-         (error-type nil))
-    (condition-case err
-        (progn
-          (with-timeout (timeout
-            (error "Timeout"))
-            (url-retrieve url
-              (lambda (status)
-                (setq response status))
-              (list (cons "Content-Type" "application/json"))
-              (list (cons "Authorization" (format "Bearer %s" api-key)))))
-          (if (and response (listp response))
-              (let ((http-status (car response)))
-                (cond
-                 ((= http-status 200) :healthy)
-                 ((member http-status '(502 503 504)) :unstable)
-                 (t :down)))
-            :down))
-      (error
-       (let ((err-msg (format "%s" err)))
-         (cond
-          ((string-match "timeout\\|Timeout" err-msg) :down)
-          ((string-match "connection\\|refused\\|network" err-msg) :down)
-          (t :unstable)))))))
+         (body (aiaos-llm-build-request-data-full
+                provider (list (aiaos-llm-message-user "ping")) nil nil))
+         (resp (condition-case err
+                   (aiaos-http-post-json url headers body 15)
+                 (error nil))))
+    (cond
+     ((and resp (car resp) (>= (car resp) 200) (< (car resp) 300))
+      (aiaos-llm-log "debug" (format "Provider %s probe: healthy (model 可用)" name))
+      :healthy)
+     ((and resp (car resp))
+      (aiaos-llm-log "warning" (format "Provider %s probe: unstable (HTTP %s)" name (car resp)))
+      :unstable)
+     ;; 无完整 HTTP 响应：用连接测试区分“可达但无响应”与“不可达”
+     ((aiaos-http--connection-test url 6)
+      (aiaos-llm-log "warning" (format "Provider %s probe: unstable (reachable, no response)" name))
+      :unstable)
+     (t
+      (aiaos-llm-log "warning" (format "Provider %s probe: down (不可达)" name))
+      :down))))
 
 (defun aiaos-llm-probe-provider-internal (provider)
   "Internal probe function for PROVIDER.
@@ -267,7 +261,7 @@ Returns one of: :healthy, :unstable, :down"
         (down nil))
     (dolist (provider aiaos-llm-providers)
       (let ((status (aiaos-llm-probe-provider provider)))
-        (case status
+        (cl-case status
           (:healthy (push provider healthy))
           (:unstable (push provider unstable))
           (:down (push provider down)))))
@@ -278,11 +272,13 @@ Returns one of: :healthy, :unstable, :down"
 ;;; Fallback 机制
 
 (defun aiaos-llm-build-fallback-chain ()
-  "Build the fallback chain from healthy providers."
+  "Build the fallback chain from healthy + unstable providers."
   (let* ((classified (aiaos-llm-classify-providers))
-         (healthy (cdr (assq :healthy classified))))
+         (healthy (cdr (assq :healthy classified)))
+         (unstable (cdr (assq :unstable classified))))
     (setq aiaos-llm-fallback-chain
-          (mapcar (lambda (p) (cdr (assq :name p))) healthy))
+          (append (mapcar (lambda (p) (cdr (assq :name p))) healthy)
+                  (mapcar (lambda (p) (cdr (assq :name p))) unstable)))
     (aiaos-llm-log "info" (format "Fallback chain: %s" aiaos-llm-fallback-chain))
     aiaos-llm-fallback-chain))
 
@@ -336,7 +332,7 @@ R1324: 确保 endpoint 与 /chat/completions 之间无重复斜杠。"
      (list :model model
            :messages messages
            :temperature 0.7
-           :max_tokens 2000))))
+           :max_tokens (if (boundp 'aiaos-llm-max-tokens) aiaos-llm-max-tokens 2000)))))
 
 ;;; 消息格式化（支持13种消息格式）
 

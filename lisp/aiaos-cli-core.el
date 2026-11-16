@@ -415,8 +415,34 @@ If no fallback is available, probes all providers to find a working one."
 
 (defcustom aiaos-llm-request-timeout 12
   "Per-provider HTTP timeout (seconds) for LLM requests.
-Short enough that dead/unreachable providers in the fallback chain fail
-quickly instead of stalling the whole chain (each timeout adds up)."
+仅作为连接/首字节超时：dead provider 在该时限内快速失败并切换，
+不会截断正常生成（生成阶段由 stall/generation 超时保护）。"
+  :type 'integer
+  :group 'aiaos-llm)
+
+(defcustom aiaos-llm-stream-stall-timeout 120
+  "流式请求中相邻两次数据到达的最大间隔（秒）。
+LLM 首 token / 推理间隔常超过数秒，过短会把可用 provider 误判为失败。"
+  :type 'integer
+  :group 'aiaos-llm)
+
+(defcustom aiaos-llm-generation-timeout 1800
+  "单次 LLM 生成（流式）的整体超时（秒）。"
+  :type 'integer
+  :group 'aiaos-llm)
+
+(defcustom aiaos-llm-fallback-rounds 50
+  "provider fallback 循环轮数（每轮按健康顺序遍历全部 provider，循环切换）。"
+  :type 'integer
+  :group 'aiaos-llm)
+
+(defcustom aiaos-llm-fallback-retry-max 9999
+  "fallback_exhausted 后（重新探测+重建链路+指数退避）的最大重试次数。"
+  :type 'integer
+  :group 'aiaos-llm)
+
+(defcustom aiaos-llm-fallback-backoff 2
+  "fallback 重试的基础退避秒数（指数增长，封顶 60s）。"
   :type 'integer
   :group 'aiaos-llm)
 
@@ -681,18 +707,28 @@ This gives true incremental streaming while keeping the pure-elisp transport."
                           "\r\n"
                            (or data ""))))
                 (process-send-string proc req))
-               ;; 等待响应结束或超时（用非阻塞方式，避免 filter 持续喂数据导致卡死）
-               (let ((iters 0)
-                     (last-size 0)
-                     (stall 0))
+               ;; 等待响应结束或超时（非阻塞轮询）。超时分层：
+               ;;   - 连接/首字节：deadline(12s) 内无任何数据 → 快速失败（死 provider）
+               ;;   - 数据到达后：相邻数据间隔超过 stream-stall-timeout(120s) → 失速失败
+               ;;   - 整体：generation-timeout(1800s) 封顶（长生成不被 12s 截断）
+               (let ((last-size 0)
+                     (last-data (float-time))
+                     (gen-deadline (+ (float-time) aiaos-llm-generation-timeout)))
                    (while (and (not aiaos-sse-done) (process-live-p proc)
-                               (< (float-time) deadline) (< stall 10))
+                               (< (float-time) gen-deadline))
                      (accept-process-output proc 0.2)
-                     (setq iters (1+ iters))
-                     (let ((sz (buffer-size response-buf)))
-                       (if (= sz last-size)
-                           (setq stall (1+ stall))
-                         (setq stall 0 last-size sz)))
+                     (let ((now (float-time))
+                           (sz (buffer-size response-buf)))
+                       (when (/= sz last-size)
+                         (setq last-size sz
+                               last-data now))
+                       (if (< sz 1)
+                           ;; 尚未收到任何响应数据：deadline 内快速失败（死 provider）
+                           (when (> now deadline)
+                             (setq aiaos-sse-done t))
+                         ;; 已有数据：失速判定（相邻数据间隔超过 stall-timeout）
+                         (when (> (- now last-data) aiaos-llm-stream-stall-timeout)
+                           (setq aiaos-sse-done t))))
                      (when (or (string-match-p "\\[DONE\\]" acc)
                                (not (process-live-p proc)))
                        (setq aiaos-sse-done t))))
@@ -836,6 +872,12 @@ Only includes options that are string-keyed (valid HTTP header names)."
                                  (stringp (car h)))))
                      headers)))))
 
+(defcustom aiaos-llm-max-tokens 8192
+  "LLM 请求的 max_tokens 上限。
+过小会导致工具调用 JSON 被截断、连续任务链路中断。"
+  :type 'integer
+  :group 'aiaos-cli)
+
 (defun aiaos-llm-build-request-data (provider message context)
   "Build request data for PROVIDER, MESSAGE, and CONTEXT."
   (let ((model (cdr (assq :model provider)))
@@ -844,7 +886,7 @@ Only includes options that are string-keyed (valid HTTP header names)."
      (list :model model
            :messages messages
            :temperature 0.7
-           :max_tokens 2000))))
+           :max_tokens aiaos-llm-max-tokens))))
 
 (defun aiaos-llm-format-messages (message context)
   "Format MESSAGE and CONTEXT into API messages array."
@@ -869,7 +911,7 @@ tool_call_id).  TOOLS is the OpenAI `tools' array.  STREAM non-nil adds
            (append (list :model model
                          :messages messages
                          :temperature 0.7
-                         :max_tokens 2000)
+                         :max_tokens aiaos-llm-max-tokens)
                    (when tools (list :tools tools))
                    (when stream (list :stream t)))))))
 
@@ -1033,6 +1075,62 @@ merge them by index, concatenating `arguments' and keeping the first non-empty
                                              (cons "arguments" (or nargs "")))))
                 result))))))
 
+;;; 健康排序 + fallback 自愈重试
+
+(declare-function aiaos-llm-probe-all-providers "aiaos-cli-llm")
+(declare-function aiaos-llm-get-provider "aiaos-cli-llm")
+(declare-function aiaos-llm-build-fallback-chain "aiaos-cli-llm")
+(declare-function aiaos-llm-set-current-provider "aiaos-cli-llm")
+(declare-function aiaos-llm-update-provider-status "aiaos-cli-llm")
+
+(defun aiaos-llm--ordered-providers ()
+  "按健康状态排序 provider：healthy → unstable → down。
+探测状态由 `aiaos-llm-update-provider-status' 在请求成功/失败时更新；
+未探测过（unknown）时保持注册顺序。"
+  (let (healthy unstable down)
+    (dolist (p aiaos-llm-providers)
+      (let ((s (cdr (assq :status p))))
+        (cond ((eq s :healthy) (push p healthy))
+              ((eq s :unstable) (push p unstable))
+              (t (push p down)))))
+    (if (and (null healthy) (null unstable))
+        aiaos-llm-providers
+      (append (nreverse healthy) (nreverse unstable) (nreverse down)))))
+
+(defun aiaos-llm--set-provider-status (name status)
+  "更新注册表中 NAME provider 的状态为 STATUS（供健康排序/熔断使用）。"
+  (let ((updated (aiaos-llm-update-provider-status
+                  (aiaos-llm-get-provider name) status)))
+    (setq aiaos-llm-providers
+          (mapcar (lambda (p) (if (equal (cdr (assq :name p)) name) updated p))
+                  aiaos-llm-providers))))
+
+(defun aiaos-llm--http-once-with-retry (msgs tools on-event)
+  "调用 `aiaos-llm--http-once'；全部 provider 不可用时自愈重试。
+
+fallback_exhausted 时：重新探测所有 provider（含 model 可用性验证）、
+重建 fallback 链路、指数退避后重试同一轮，保障任务链路持续不间断。
+重试上限 `aiaos-llm-fallback-retry-max'；仅当重试耗尽才返回失败结果。"
+  (catch 'retry-done
+    (let ((retry 0))
+      (while t
+        (let ((result (aiaos-llm--http-once msgs tools t on-event)))
+          (let ((err (cdr (assq 'error result))))
+            (if (not (and err (string= err "fallback_exhausted")))
+                (throw 'retry-done result)
+              (setq retry (1+ retry))
+              (if (> retry aiaos-llm-fallback-retry-max)
+                  (throw 'retry-done result))
+              (let ((delay (min 60 (* aiaos-llm-fallback-backoff retry))))
+                (aiaos-llm-log
+                 "warning"
+                 (format "所有 provider 均不可用（第 %d/%d 次），重新探测并退避 %ds 后重试"
+                         retry aiaos-llm-fallback-retry-max delay))
+                ;; 自愈：重新探测（含 model 可用性）并重建 fallback 链路
+                (ignore-errors (aiaos-llm-probe-all-providers))
+                (ignore-errors (aiaos-llm-build-fallback-chain))
+                (sleep-for delay)))))))))
+
 (defun aiaos-llm--http-once (messages &optional tools stream on-event)
   "Send MESSAGES (with TOOLS, optionally STREAM) to the LLM once.
 Tries each provider in order until one succeeds.  Returns an alist:
@@ -1047,7 +1145,7 @@ reply in `reply'."
         (last-error nil)
         (success nil)
         (round 0)
-        (max-rounds 2))           ; R-FALLBACK-LOOP: 切换完一轮后从头再循环一轮
+        (max-rounds aiaos-llm-fallback-rounds))           ; R-FALLBACK-LOOP: 切换完一轮后从头再循环一轮
     (if (null providers)
         (list (cons 'error "no_providers")
               (cons 'message "没有配置任何 LLM provider"))
@@ -1055,6 +1153,8 @@ reply in `reply'."
         (setq round (1+ round))
         (dolist (provider providers)
           (when (not success)
+            ;; 切换 provider：name/model/endpoint/api-key 随该 provider 配置一并生效
+            (aiaos-llm-set-current-provider (cdr (assq :name provider)))
           (let* ((name (cdr (assq :name provider)))
                  (url (aiaos-llm-build-request-url provider))
                  (headers (aiaos-llm-build-request-headers provider))
@@ -1105,6 +1205,8 @@ reply in `reply'."
                                     (aiaos-extract-response-content result))))
                         (tool-calls (or (and stream stream-tool-calls)
                                         (if (stringp result) nil (aiaos-extract-response-tool-calls result)))))
+            ;; 更新 provider 健康状态（成功）
+            (aiaos-llm--set-provider-status name :healthy)
                     (setq success (list (cons 'reply (or content ""))
                                         (cons 'tool_calls tool-calls)
                                         (cons 'provider name)
@@ -1113,6 +1215,8 @@ reply in `reply'."
               (let ((err-msg (if (and result (listp result))
                                   (or (aiaos-extract-response-error result) (format "HTTP %s" status))
                                 (format "HTTP %s" status))))
+            ;; 更新 provider 健康状态（失败，进入 unhealthy 排队重试）
+            (aiaos-llm--set-provider-status name :unstable)
                  (push (format "%s:%s" name err-msg) attempts)
                  (setq last-error err-msg)))))))
       (or success
@@ -1124,63 +1228,380 @@ reply in `reply'."
 (defun aiaos-llm-execute-tool-arg (call)
   "Execute a single tool CALL (OpenAI format), return (id name result-string)."
   (let* ((id (or (cdr (assq 'id call)) ""))
-         (name (aiaos-llm-tool-call-name call))
-         (args (aiaos-llm-tool-call-parse-args call))
-         (result (if name
-                     (aiaos-llm-tool-call name (or args nil))
-                   "Tool name missing")))
-    (list id name (format "%s" result))))
+          (name (aiaos-llm-tool-call-name call))
+          (args (aiaos-llm-tool-call-parse-args call))
+          (result (if name
+                      (aiaos-llm-tool-call name (or args nil))
+                    "Tool name missing")))
+     (list id name (format "%s" result))))
 
-(defun aiaos-llm-full-chat (messages &optional tools max-iters on-event)
+;;; === ;;elisp-exec 持续交互执行协议 ===
+;;
+;; 协议约定：LLM 在回复中输出以 ";;elisp-exec" 注释开头的 Elisp 程序，
+;; aiaos-cli 自动截取该程序并在 Emacs 环境中执行，将执行结果（含 stdout、
+;; [stderr] 调试信息、错误与完整回溯）作为新消息回传给 LLM；LLM 据此提供
+;; 下一个 ";;elisp-exec" 程序，循环推进，直到给出不含该标记的最终答复。
+
+(defconst aiaos-llm-elisp-exec-marker ";;elisp-exec"
+  "LLM 回复中标记待执行 Elisp 程序的注释前缀。")
+
+;; === 双轨指导协议（dual-guidance）：;;elisp-sim 仿真预测指导层 ===
+;;
+;; LLM 回复可同时携带两种指导模式：
+;;   1) LLM 连续任务指导层 —— 回复正文（自然语言任务指导）
+;;   2) elisp 连续任务建模仿真预测指导层 —— ;;elisp-sim 块（本协议）
+;; ;;elisp-sim 块执行 aiaos-cli-sim-evaluate，产出结构化 JSON 仿真/预测/
+;; 判断/反向指导结果，作为第二条指导通道回传 LLM。
+
+(defconst aiaos-llm-elisp-sim-marker ";;elisp-sim"
+  "LLM 回复中标记仿真/预测 Elisp 程序的注释前缀（双轨指导的 elisp 层）。")
+
+(defcustom aiaos-llm-elisp-sim-max-rounds 25
+  "单次对话中 ;;elisp-sim 程序的最大连续执行轮数（防死循环）。"
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defun aiaos-llm--extract-marked-block (reply marker)
+  "从 LLM 回复 REPLY 中提取第一个以 MARKER 注释开头的代码块。
+
+支持形态（标记行之后直到结束标记/下一个标记/代码围栏/回复末尾）：
+  MARKER
+  (elisp 代码...)
+
+返回去除断言后的代码字符串；无有效代码块时返回 nil。"
+  (when (and reply (string-match-p (regexp-quote marker) reply))
+    (let ((lines (split-string reply "\n"))
+          (collecting nil)
+          (code-lines nil)
+          (done nil))
+      (dolist (line lines)
+        (unless done
+          (let ((stripped (string-trim line)))
+            (cond
+             ((and (not collecting)
+                   (string-match (concat "^[[:space:]]*"
+                                         (regexp-quote marker)
+                                         "\\(?:[[:space:]]+\\(.*\\)\\)?[[:space:]]*$")
+                                 line))
+              (setq collecting t)
+              (let ((rest (match-string 1 line)))
+                (when (and rest (not (string-empty-p (string-trim rest))))
+                  (setq code-lines (append code-lines (list (string-trim rest)))))))
+             ((and collecting
+                   (string-match-p (concat "^[[:space:]]*"
+                                           (regexp-quote marker))
+                                   line))
+              (setq done t))
+             ((and collecting (string-match-p "^[[:space:]]*```" line))
+              (if code-lines (setq done t) nil))
+             (collecting
+              (setq code-lines (append code-lines (list line))))))))
+      (when (and code-lines collecting)
+        (string-trim (mapconcat #'identity code-lines "\n"))))))
+
+(defun aiaos-llm--extract-elisp-sim (reply)
+  "从 LLM 回复 REPLY 中提取 ;;elisp-sim 仿真/预测程序。
+返回代码字符串；无则 nil。"
+  (aiaos-llm--extract-marked-block reply aiaos-llm-elisp-sim-marker))
+
+;; ;;elisp-exec 复用通用提取器（行为与旧实现一致）
+(defun aiaos-llm--extract-elisp-exec (reply)
+  "从 LLM 回复 REPLY 中提取第一个 ;;elisp-exec 标记的 Elisp 程序。
+返回去除断言后的代码字符串；REPLY 中无有效程序时返回 nil。"
+  (aiaos-llm--extract-marked-block reply aiaos-llm-elisp-exec-marker))
+
+(defun aiaos-llm--elisp-sim-runner ()
+  "返回执行仿真/预测程序的函数（输入 code，输出结构化 JSON 结果字符串）。
+优先使用 `aiaos-cli-sim-evaluate'；不可用时回退到进程内 eval。"
+  (unless (fboundp 'aiaos-cli-sim-evaluate)
+    (require 'aiaos-cli-sim nil t))
+  (cond
+   ((fboundp 'aiaos-cli-sim-evaluate)
+    (lambda (code)
+      (let ((form (condition-case err
+                      (read code)
+                    (error nil))))
+        (cond
+         ((null form)
+          (json-encode (list (cons "status" "error")
+                             (cons "message" "sim 代码为空或无法解析"))))
+         ;; LLM 给出 aiaos-cli-sim-evaluate 调用 → eval 得到结构化 JSON
+         ((and (listp form) (eq (car form) 'aiaos-cli-sim-evaluate))
+          (condition-case err
+              (eval form t)
+            (error
+             (json-encode (list (cons "status" "error")
+                                (cons "message" (error-message-string err)))))))
+         ;; 其余（裸 plist / 模型名 symbol）→ 交给 evaluate
+         (t
+          (aiaos-cli-sim-evaluate form ";;elisp-sim 协议仿真"))))))
+   (t
+    (lambda (code)
+      (condition-case err
+          (format "%s" (eval (read code) t))
+        (error (format "ERROR: %s" err)))))))
+
+(defcustom aiaos-llm-elisp-exec-max-rounds 25
+  "单次对话中 ;;elisp-exec 程序的最大连续执行轮数（防死循环）。"
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defun aiaos-llm--extract-elisp-exec (reply)
+  "从 LLM 回复 REPLY 中提取第一个 ;;elisp-exec 标记的 Elisp 程序。
+
+支持的形态（标记行之后直到结束标记/下一个标记/代码围栏/回复末尾）：
+  ;;elisp-exec
+  (elisp 代码...)
+
+返回去除断言后的代码字符串；REPLY 中无有效程序时返回 nil。"
+  (when (and reply (string-match-p (regexp-quote aiaos-llm-elisp-exec-marker) reply))
+    (let ((lines (split-string reply "\n"))
+          (collecting nil)
+          (code-lines nil)
+          (done nil))
+      (dolist (line lines)
+        (unless done
+          (let ((stripped (string-trim line)))
+            (cond
+             ;; 标记行：开始收集（同一行标记后的剩余文本作为首行代码）
+             ;; 注意：用 string-match（非 -p）以设置 match-data 供 match-string 取组
+             ((and (not collecting)
+                   (string-match (concat "^[[:space:]]*"
+                                         (regexp-quote aiaos-llm-elisp-exec-marker)
+                                         "\\(?:[[:space:]]+\\(.*\\)\\)?[[:space:]]*$")
+                                 line))
+              (setq collecting t)
+              (let ((rest (match-string 1 line)))
+                (when (and rest (not (string-empty-p (string-trim rest))))
+                  (setq code-lines (append code-lines (list (string-trim rest)))))))
+             ;; 收集中遇到结束/下一个标记 → 停止
+             ((and collecting
+                   (string-match-p (concat "^[[:space:]]*"
+                                           (regexp-quote aiaos-llm-elisp-exec-marker))
+                                   line))
+              (setq done t))
+             ;; 收集中遇到 markdown 围栏：已有代码 → 视为闭合围栏停止；
+             ;; 尚无代码 → 视为 ```elisp 起始围栏，跳过
+             ((and collecting (string-match-p "^[[:space:]]*```" line))
+              (if code-lines (setq done t) nil))
+             ;; 收集中：普通代码行
+             (collecting
+              (setq code-lines (append code-lines (list line))))))))
+      (when (and code-lines collecting)
+        (string-trim (mapconcat #'identity code-lines "\n"))))))
+
+(defun aiaos-llm--elisp-exec-runner ()
+  "返回执行 Elisp 代码的函数（输入 code，输出结构化 JSON 结果字符串）。
+
+优先使用 `aiaos-cli-elisp-execute'（execute_elisp 标准：静态策略检查 +
+emacs --batch 子进程隔离执行 + 超时/输出/错误捕获）；不可用时回退到进程内 eval。"
+  (unless (fboundp 'aiaos-cli-elisp-execute)
+    (require 'aiaos-cli-elisp nil t))
+  (cond
+   ((fboundp 'aiaos-cli-elisp-execute)
+    (lambda (code)
+      (aiaos-cli-elisp-execute code ";;elisp-exec 协议执行")))
+   (t
+    (lambda (code)
+      (condition-case err
+          (format "%s" (eval (read code) t))
+        (error (format "ERROR: %s" err)))))))
+
+;;; === 持续执行任务链路协议（连续工具调用 / 连续消息 / SSE 连续输出）===
+
+(defconst aiaos-llm-task-complete-marker "[[TASK_COMPLETE]]"
+  "持续执行协议中，LLM 在任务全部完成时于最终答复末尾追加的标记。")
+
+(defcustom aiaos-llm-continuation-max-rounds 99999
+  "持续执行模式下续跑轮数上限（防止无限循环）。"
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defvar aiaos-llm--last-run-stats nil
+  "最近一次 `aiaos-llm-full-chat' 的执行统计（iterations/tool_count 等）。")
+
+(defun aiaos-llm-full-chat (messages &optional tools max-iters on-event continuous)
   "Run a full LLM chat loop with MESSAGES and TOOLS.
 
 Loops: send MESSAGES -> if the model returns tool_calls, execute each tool,
-append assistant + tool-result messages, and repeat (up to MAX-ITERS).  Stops
-when the model returns a plain text reply.  Returns the final reply string.
+append assistant + tool-result messages, and repeat (up to MAX-ITERS).  If the
+model's plain reply contains a ;;elisp-exec program, execute it in Emacs via
+the execute_elisp sandbox, append the structured result as feedback, and let
+the model continue with the next program (separate round budget).
 
-ON-EVENT, if non-nil, is called with each SSE delta object during streaming."
+CONTINUOUS non-nil enables the continuous task-chain protocol (agent mode):
+the loop does NOT stop at the first plain-text reply.  Instead the model keeps
+calling tools; a plain reply without `aiaos-llm-task-complete-marker' triggers
+a continuation round (up to `aiaos-llm-continuation-max-rounds') until the
+model appends the completion marker.
+
+ON-EVENT, if non-nil, is called with each SSE delta object during streaming,
+plus round / tool_call / tool_result / elisp_exec / continuation / round_summary
+events.
+
+Returns the final reply string (completion marker stripped).  Run statistics
+are stored in `aiaos-llm--last-run-stats'."
   (let ((msgs messages)
         (tools (or tools (and (fboundp 'aiaos-llm-build-tools-schema)
                               (aiaos-llm-build-tools-schema))))
         (iters (or max-iters 10))
         (i 0)
-        (final-reply nil))
-    (while (and (not final-reply) (< i iters))
-      (setq i (1+ i))
-      (let ((result (aiaos-llm--http-once msgs tools t on-event)))
-        (let ((reply (cdr (assq 'reply result)))
-              (tool-calls (cdr (assq 'tool_calls result)))
-              (error-msg (cdr (assq 'error result)))
-              (permanent (cdr (assq 'permanent result))))
-          (cond
-           ((or permanent (and error-msg (string= error-msg "fallback_exhausted")))
-            (error "fallback_exhausted: 所有 LLM provider 均不可用"))
-           (tool-calls
-            ;; 追加 assistant 消息（含 tool_calls）+ 各工具结果，再继续
-            (setq msgs (append msgs
-                               (list (aiaos-llm-message-assistant "" tool-calls))))
-            (dolist (call tool-calls)
-              (let* ((info (aiaos-llm-execute-tool-arg call))
-                     (tid (nth 0 info))
-                     (tname (nth 1 info))
-                     (tresult (nth 2 info)))
-                (when on-event
-                  (funcall on-event (list (cons 'type "tool_call")
-                                          (cons 'name tname)
-                                          (cons 'args (and call (cdr (assq 'function call)))))))
-                (when on-event
-                  (funcall on-event (list (cons 'type "tool_result")
-                                          (cons 'name tname)
-                                          (cons 'result tresult))))
-                (setq msgs (append msgs
-                                   (list (aiaos-llm-message-tool tid tresult)))))))
-           ((and reply (> (length (format "%s" reply)) 0))
-            (setq final-reply (format "%s" reply)))
-           (error-msg
-            (error "LLM error: %s" error-msg))
-           (t
-            (error "LLM returned empty reply"))))))
-    (or final-reply "")))
+        (elisp-rounds 0)
+        (tool-rounds 0)
+        (total-tools 0)
+        (round-no 0)
+        (round-tools nil)
+        (round-replied nil)
+        (cont-rounds 0)
+        (final-reply nil)
+        (done nil))
+    (while (and (not done)
+                (< i (+ iters (if continuous aiaos-llm-continuation-max-rounds 0))))
+      (setq i (1+ i)
+            round-no (1+ round-no)
+            round-tools nil
+            round-replied nil)
+      (when on-event
+        (funcall on-event (list (cons 'type "round") (cons 'round round-no))))
+      (let* ((result (aiaos-llm--http-once-with-retry msgs tools on-event))
+             (reply (cdr (assq 'reply result)))
+             (tool-calls (cdr (assq 'tool_calls result)))
+             (error-msg (cdr (assq 'error result)))
+             (permanent (cdr (assq 'permanent result))))
+        (cond
+         ((or permanent (and error-msg (string= error-msg "fallback_exhausted")))
+          (setq done t)
+          (error "fallback_exhausted: 所有 LLM provider 均不可用"))
+         (tool-calls
+          ;; 连续工具调用：追加 assistant 消息（含 tool_calls）+ 各工具结果，再继续
+          (setq tool-rounds (1+ tool-rounds)
+                total-tools (+ total-tools (length tool-calls))
+                msgs (append msgs
+                             (list (aiaos-llm-message-assistant "" tool-calls))))
+          (dolist (call tool-calls)
+            (let* ((info (aiaos-llm-execute-tool-arg call))
+                   (tid (nth 0 info))
+                   (tname (nth 1 info))
+                   (tresult (nth 2 info)))
+              (setq round-tools (append round-tools (list tname)))
+              (when on-event
+                (funcall on-event (list (cons 'type "tool_call")
+                                        (cons 'name tname)
+                                        (cons 'args (and call (cdr (assq 'function call)))))))
+              (when on-event
+                (funcall on-event (list (cons 'type "tool_result")
+                                        (cons 'name tname)
+                                        (cons 'result tresult))))
+              (setq msgs (append msgs
+                                 (list (aiaos-llm-message-tool tid tresult)))))))
+         ((and reply (> (length reply) 0))
+          (setq round-replied t)
+          (let* ((reply-str reply)
+                 (complete-p (string-match-p
+                              (regexp-quote aiaos-llm-task-complete-marker)
+                              reply-str))
+                 (sim-code (aiaos-llm--extract-elisp-sim reply-str))
+                 (exec-code (aiaos-llm--extract-elisp-exec reply-str)))
+            (cond
+             ;; 1) 双轨指导：;;elisp-sim 仿真预测（elisp 指导层）与
+             ;;    ;;elisp-exec 执行层可同时出现于同一回复，各成一条反馈通道
+             ((or sim-code exec-code)
+              (setq i (1- i))
+              (let ((feedback-msgs nil)
+                    (rounds-used 0))
+                ;; 1a) elisp 仿真/预测指导层
+                (when (and sim-code (not done))
+                  (setq elisp-rounds (1+ elisp-rounds)
+                        rounds-used (1+ rounds-used))
+                  (if (> elisp-rounds aiaos-llm-elisp-sim-max-rounds)
+                      (setq final-reply reply-str
+                            done t)
+                    (let* ((runner (aiaos-llm--elisp-sim-runner))
+                           (sim-result (condition-case err
+                                          (funcall runner sim-code)
+                                        (error (format "ERROR: %s" err))))
+                           (feedback (concat "[elisp-sim 仿真/预测指导层结果]\n"
+                                             sim-result
+                                             "\n\n请基于此仿真结果与正文指导继续推进任务："
+                                             "若需执行代码请给出 ;;elisp-exec；"
+                                             "若需再仿真请给出 ;;elisp-sim；"
+                                             "若任务已完成请给出不含标记的最终答复。")))
+                      (when on-event
+                        (funcall on-event (list (cons 'type "elisp_sim")
+                                                (cons 'code sim-code)
+                                                (cons 'result sim-result)
+                                                (cons 'round elisp-rounds))))
+                      (push (aiaos-llm-message-user feedback) feedback-msgs))))
+                ;; 1b) ;;elisp-exec 执行层
+                (when (and exec-code (not done))
+                  (setq elisp-rounds (1+ elisp-rounds)
+                        rounds-used (1+ rounds-used))
+                  (if (> elisp-rounds aiaos-llm-elisp-exec-max-rounds)
+                      (setq final-reply reply-str
+                            done t)
+                    (let* ((runner (aiaos-llm--elisp-exec-runner))
+                           (exec-result (condition-case err
+                                          (funcall runner exec-code)
+                                        (error (format "ERROR: %s" err))))
+                           (feedback (concat "[elisp-exec 执行结果]\n"
+                                             exec-result
+                                             "\n\n请继续：若还需要执行代码，请给出下一个以 "
+                                             ";;elisp-exec 开头的 Elisp 程序；"
+                                             "若任务已完成，请直接给出最终答复"
+                                             "（不要再包含 ;;elisp-exec）。")))
+                      (when on-event
+                        (funcall on-event (list (cons 'type "elisp_exec")
+                                                (cons 'code exec-code)
+                                                (cons 'result exec-result)
+                                                (cons 'round elisp-rounds))))
+                      (push (aiaos-llm-message-user feedback) feedback-msgs))))
+                ;; 统一追加：assistant 回复 + 各指导通道反馈
+                (when (and (not done) feedback-msgs)
+                  (setq msgs (append msgs
+                                     (list (aiaos-llm-message-assistant reply-str))
+                                     (nreverse feedback-msgs))))))
+             ;; 2) 持续执行协议：任务未完成 → 续跑（连续工具调用/连续消息）
+             ((and continuous
+                   (not complete-p)
+                   (< cont-rounds aiaos-llm-continuation-max-rounds))
+              (setq cont-rounds (1+ cont-rounds)
+                    i (1- i))
+              (when on-event
+                (funcall on-event (list (cons 'type "continuation")
+                                        (cons 'round cont-rounds))))
+              (setq msgs (append msgs
+                                 (list (aiaos-llm-message-assistant reply-str))
+                                 (list (aiaos-llm-message-user
+                                        (concat "任务尚未完成。请继续执行：继续调用工具推进任务，"
+                                                "或给出最终答复；若任务已全部完成，"
+                                                "请在答复末尾追加 "
+                                                aiaos-llm-task-complete-marker
+                                                "。"))))))
+             ;; 3) 最终答复（剥离完成标记）
+             (t
+              (setq final-reply
+                    (if complete-p
+                        (string-trim
+                         (replace-regexp-in-string
+                          (regexp-quote aiaos-llm-task-complete-marker)
+                          "" reply-str))
+                      reply-str))
+              (setq done t)))))
+        ;; 每轮任务摘要：向 agent buffer 报告本轮执行情况（轮次/工具/回复）
+        (when on-event
+          (funcall on-event
+                   (list (cons 'type "round_summary")
+                         (cons 'round round-no)
+                         (cons 'tools (mapconcat #'identity round-tools ", "))
+                         (cons 'tool-count (length round-tools))
+                         (cons 'replied round-replied))))))
+    ;; 运行统计（供 done 事件等使用）
+    (setq aiaos-llm--last-run-stats
+          (list (cons "iterations" i)
+                (cons "tool_count" total-tools)
+                (cons "elisp_rounds" elisp-rounds)
+                (cons "continuations" cont-rounds)))
+    (or final-reply ""))))
 
 (defun aiaos-llm-chat-stream (message &optional system-prompt callback)
   "Convenience: run a full LLM chat for MESSAGE with streaming.

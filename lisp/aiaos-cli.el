@@ -55,6 +55,7 @@
 (require 'aiaos-cli-command)
 (require 'aiaos-cli-registry)
 (require 'aiaos-cli-elisp)
+(require 'aiaos-cli-sim)
 
 (defgroup aiaos-cli nil
   "AIAOS-CLI Emacs frontend."
@@ -1174,6 +1175,31 @@ agent-buffer path, so single-source formatting is shared."
      ((string= type "tool_result")
       (aiaos-cli--format-tool-result
        (gethash "name" obj) (gethash "result" obj)))
+     ;; 轮次开始：显示轮次进度
+     ((string= type "round")
+      (propertize (format "▶ 第 %s 轮开始" (or (gethash "round" obj) "?"))
+                  'face 'font-lock-keyword-face))
+     ;; 每轮任务摘要：显示本轮工具调用与回复情况
+     ((string= type "round_summary")
+      (let ((rn (gethash "round" obj))
+            (tools (gethash "tools" obj))
+            (tc (gethash "tool-count" obj))
+            (replied (gethash "replied" obj)))
+        (propertize
+         (format "📋 第 %s 轮完成：%s%s"
+                 (or rn "?")
+                 (if (and tc (numberp tc) (> tc 0))
+                     (format "调用工具 %d 次%s" tc
+                             (if (and tools (not (string-empty-p tools)))
+                                 (format "（%s）" tools)
+                               ""))
+                   "未调用工具")
+                 (if replied "｜已生成回复" ""))
+         'face 'font-lock-doc-face)))
+     ;; 持续执行协议：续跑提示
+     ((string= type "continuation")
+      (propertize (format "🔄 继续执行任务（第 %s 轮）" (or (gethash "round" obj) "?"))
+                  'face 'font-lock-comment-face))
      ;; 错误（含 provider 503/508/429）
      ((string= type "error")
       (propertize (format "⛔ %s" (or content "未知错误"))
@@ -1216,7 +1242,7 @@ agent-buffer path, so single-source formatting is shared."
 
 同时解析 SSE 格式（data: {...}）与纯 JSONL。answer 事件按连续 chunk
 拼接（不插入换行），其余事件各占一行。"
-  (let ((lines (split-string output "\n" t))
+  (let ((lines (split-string output "\n"))
         (parts nil)
         (last-was-answer nil))
     (dolist (line lines)
@@ -1247,7 +1273,7 @@ agent-buffer path, so single-source formatting is shared."
 ;;   4) 若未完成，不回到提示符，自动继续执行任务。
 (defvar aiaos-cli--task-continue-count 0
   "当前任务自动续行次数（防止无限循环）。")
-(defvar aiaos-cli--task-continue-max 3
+(defvar aiaos-cli--task-continue-max 9999
   "任务自动续行的最大次数，超过后强制回到提示符。")
 (defvar aiaos-cli--last-agent-reply nil
   "最近一次 agent 回复内容（用于任务完成度记录检测）。")
@@ -1386,7 +1412,36 @@ STREAM-CB and DONE-CB may be nil (batch mode)."
                                                         (list (cons "type" "tool_result")
                                                               (cons "name" (cdr (assq 'name obj)))
                                                               (cons "result" (cdr (assq 'result obj)))))
-                                                       "\n"))))))))))
+                                                       "\n")))
+                           ;; 轮次开始：转发轮号（agent buffer 显示轮次进度）
+                           ((equal type "round")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "round")
+                                                              (cons "round" (cdr (assq 'round obj)))))
+                                                       "\n")))
+                           ;; 每轮任务摘要：转发轮次小结（工具调用情况）
+                           ((equal type "round_summary")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "round_summary")
+                                                              (cons "round" (cdr (assq 'round obj)))
+                                                              (cons "tools" (cdr (assq 'tools obj)))
+                                                              (cons "tool-count" (cdr (assq 'tool-count obj)))
+                                                              (cons "replied" (cdr (assq 'replied obj)))))
+                                                       "\n")))
+                           ;; 持续执行协议：转发续跑事件
+                           ((equal type "continuation")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "continuation")
+                                                              (cons "round" (cdr (assq 'round obj)))))
+                                                       "\n")))
+                           ;; ;;elisp-exec 持续执行协议：转发程序执行事件
+                           ((equal type "elisp_exec")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "elisp_exec")
+                                                              (cons "code" (cdr (assq 'code obj)))
+                                                              (cons "result" (cdr (assq 'result obj)))
+                                                              (cons "round" (cdr (assq 'round obj)))))
+"\n"))))))) t)))
             (setq out (format "%s" reply))
             ;; 若流式事件已渲染了部分内容，此处只发送剩余增量；
             ;; 简化：直接把完整 reply 作为 answer 事件发送（渲染器按内容去重）。
@@ -1478,7 +1533,9 @@ completion detection after the dialog and emits a `task_check' event:
                                               (cons "status" status)
                                               (cons "out" out)
                                               (cons "err" err)
-                                              (cons "complete" (if complete t :json-false)))))
+                                              (cons "complete" (if complete t :json-false))
+                                              (cons "iterations" (or (cdr (assoc "iterations" aiaos-llm--last-run-stats)) 0))
+                                              (cons "tool_count" (or (cdr (assoc "tool_count" aiaos-llm--last-run-stats)) 0)))))
                      (princ "\n")
 (setq events (cons (list status out err) events))))
               records)
