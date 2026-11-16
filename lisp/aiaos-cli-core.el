@@ -807,11 +807,68 @@ Handles both formats:
           (error nil))
       nil)))
 
+(defcustom aiaos-llm-fallback-chain-file "~/.openclaw/openclaw.json"
+  "Path to openclaw.json providing the preferred fallback chain order."
+  :type 'string
+  :group 'aiaos-cli)
+
+(defcustom aiaos-llm-fallback-chain-key "fallback_chain"
+  "JSON key in `aiaos-llm-fallback-chain-file' holding the fallback chain list."
+  :type 'string
+  :group 'aiaos-cli)
+
+(defun aiaos-llm--load-fallback-chain-from-openclaw ()
+  "Load preferred fallback chain from openclaw.json if present.
+Returns a list of provider names, or nil if unavailable."
+  (let ((file (expand-file-name aiaos-llm-fallback-chain-file)))
+    (when (file-exists-p file)
+      (condition-case nil
+          (let* ((data (aiaos-json-parse (with-temp-buffer
+                                           (insert-file-contents file)
+                                           (buffer-string))))
+                 (chain (cdr (assoc aiaos-llm-fallback-chain-key data))))
+            (when (and (listp chain) (not (null chain)))
+              (delq nil (mapcar (lambda (n) (and (stringp n) n)) chain))))
+        (error nil)))))
+
+(defun aiaos-llm--reorder-providers-by-chain (chain)
+  "Reorder `aiaos-llm-providers' so names in CHAIN come first (preserving CHAIN order),
+then any remaining providers in their original order.  Returns the reordered list."
+  (when (and chain aiaos-llm-providers)
+    (let ((by-name (mapcar (lambda (p) (cons (cdr (assq :name p)) p)) aiaos-llm-providers))
+          (ordered nil))
+      (dolist (name chain)
+        (let ((entry (assoc name by-name)))
+          (when entry
+            (push (cdr entry) ordered)
+            (setq by-name (delete entry by-name)))))
+      (setq aiaos-llm-providers
+            (append (nreverse ordered) (mapcar #'cdr by-name)))))
+  aiaos-llm-providers)
+
 (defun aiaos-ensure-llm-providers ()
-  "Ensure aiaos-llm-providers is populated from config if empty."
+  "Ensure aiaos-llm-providers is populated from config if empty.
+加载后按 openclaw.json 的 fallback_chain 偏好顺序重排 provider，
+并把该偏好顺序设为 `aiaos-llm-fallback-chain'，使切换优先使用偏好顺序。"
   (when (and (null aiaos-llm-providers)
              (file-exists-p (expand-file-name aiaos-llm-config-file)))
-    (setq aiaos-llm-providers (aiaos-load-llm-providers-from-config)))
+    (setq aiaos-llm-providers (aiaos-load-llm-providers-from-config))
+    (let ((chain (aiaos-llm--load-fallback-chain-from-openclaw)))
+      (when chain
+        (aiaos-llm--reorder-providers-by-chain chain)
+        (setq aiaos-llm-fallback-chain chain))))
+  aiaos-llm-providers)
+
+(defun aiaos-llm-reload-providers ()
+  "Force reload LLM providers from config and refresh fallback chain.
+调用后可在不重启 Emacs 的情况下让配置变更生效。"
+  (interactive)
+  (setq aiaos-llm-providers nil)
+  (aiaos-ensure-llm-providers)
+  (aiaos-llm-log "info"
+                 (format "Reloaded %d providers; fallback chain: %s"
+                         (length aiaos-llm-providers)
+                         (or aiaos-llm-fallback-chain "none")))
   aiaos-llm-providers)
 
 ;;; 响应解析（OpenAI 兼容格式）
@@ -1084,18 +1141,25 @@ merge them by index, concatenating `arguments' and keeping the first non-empty
 (declare-function aiaos-llm-update-provider-status "aiaos-cli-llm")
 
 (defun aiaos-llm--ordered-providers ()
-  "按健康状态排序 provider：healthy → unstable → down。
+  "按健康状态排序 provider：healthy → unknown → unstable → down。
 探测状态由 `aiaos-llm-update-provider-status' 在请求成功/失败时更新；
-未探测过（unknown）时保持注册顺序。"
-  (let (healthy unstable down)
+未探测过（unknown）的 provider 排在不稳定（unstable）之前，
+因为它们尚未失败、很可能可用；down 排最后（熔断）。
+这样能确保：上次成功（healthy）的 provider 优先被尝试（避免每次都
+从固定顺序头部的失败 provider 重新探测），而所有 provider 都会在
+健康者失效时被遍历到，而非只停在固定顺序中第一个可用的 provider。"
+  (let (healthy unknown unstable down)
     (dolist (p aiaos-llm-providers)
       (let ((s (cdr (assq :status p))))
         (cond ((eq s :healthy) (push p healthy))
+              ;; 初始状态为符号 unknown，探测后可变为关键字 :unknown
+              ((memq s '(:unknown unknown)) (push p unknown))
               ((eq s :unstable) (push p unstable))
               (t (push p down)))))
-    (if (and (null healthy) (null unstable))
+    (if (and (null healthy) (null unknown) (null unstable))
         aiaos-llm-providers
-      (append (nreverse healthy) (nreverse unstable) (nreverse down)))))
+      (append (nreverse healthy) (nreverse unknown)
+              (nreverse unstable) (nreverse down)))))
 
 (defun aiaos-llm--set-provider-status (name status)
   "更新注册表中 NAME provider 的状态为 STATUS（供健康排序/熔断使用）。"
@@ -1140,7 +1204,11 @@ If STREAM is non-nil and ON-EVENT is a function, uses real SSE streaming and
 calls ON-EVENT with each parsed delta object.  Returns the final accumulated
 reply in `reply'."
   (aiaos-ensure-llm-providers)
-  (let ((providers aiaos-llm-providers)
+  ;; R-ORDER-PROVIDERS: 用健康排序而非固定注册顺序遍历，
+  ;; 使上次成功的 provider 优先被尝试，且在健康者失效时遍历到
+  ;; 其余全部 provider（含 unknown/unstable），而非只停留在固定
+  ;; 顺序中第一个可用的 provider（避免"只在少数几个 provider 间切换"）。
+  (let ((providers (aiaos-llm--ordered-providers))
         (attempts nil)
         (last-error nil)
         (success nil)

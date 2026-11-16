@@ -255,29 +255,36 @@ Returns one of: :healthy, :unstable, :down"
     results))
 
 (defun aiaos-llm-classify-providers ()
-  "Classify providers into categories: healthy, unstable, down."
+  "Classify providers into categories: healthy, unknown, unstable, down."
   (let ((healthy nil)
+        (unknown nil)
         (unstable nil)
         (down nil))
     (dolist (provider aiaos-llm-providers)
       (let ((status (aiaos-llm-probe-provider provider)))
         (cl-case status
           (:healthy (push provider healthy))
+          (:unknown (push provider unknown))
           (:unstable (push provider unstable))
           (:down (push provider down)))))
     (list :healthy healthy
+          :unknown unknown
           :unstable unstable
           :down down)))
 
 ;;; Fallback 机制
 
 (defun aiaos-llm-build-fallback-chain ()
-  "Build the fallback chain from healthy + unstable providers."
+  "Build the fallback chain from healthy + unknown + unstable providers.
+未探测过（unknown）的 provider 也纳入，保证所有候选都进入链路；
+仅排除明确 down（熔断）的 provider，避免它们在自愈重试前被永久跳过。"
   (let* ((classified (aiaos-llm-classify-providers))
          (healthy (cdr (assq :healthy classified)))
+         (unknown (cdr (assq :unknown classified)))
          (unstable (cdr (assq :unstable classified))))
     (setq aiaos-llm-fallback-chain
           (append (mapcar (lambda (p) (cdr (assq :name p))) healthy)
+                  (mapcar (lambda (p) (cdr (assq :name p))) unknown)
                   (mapcar (lambda (p) (cdr (assq :name p))) unstable)))
     (aiaos-llm-log "info" (format "Fallback chain: %s" aiaos-llm-fallback-chain))
     aiaos-llm-fallback-chain))
