@@ -520,3 +520,40 @@ PURPOSE 为意图说明（安全审计用）；TIMEOUT-SECONDS 为超时秒数�
 (provide 'aiaos-cli-elisp)
 
 ;;; aiaos-cli-elisp.el ends here
+
+;;; === LLM provider 状态查询辅助（elisp 适配层） ===
+;; LLM 通过 execute_elisp 查询当前 provider 与 fallback 链状态，
+;; 用于交互消息展示与 provider 切换决策。
+
+(defun aiaos-cli-elisp--provider-status ()
+  "返回当前 LLM provider 状态（含 fallback 链、健康排序）。"
+  (let ((providers (and (boundp 'aiaos-llm-providers) aiaos-llm-providers))
+        (current (and (boundp 'aiaos-llm-current-provider) aiaos-llm-current-provider))
+        (chain (and (boundp 'aiaos-llm-fallback-chain) aiaos-llm-fallback-chain)))
+    (json-encode
+     (delq nil
+           (list (cons "current_provider" (or current ""))
+                 (cons "provider_count" (length providers))
+                 (cons "fallback_chain" (or chain (vector)))
+                 (cons "providers"
+                       (apply 'vector
+                              (mapcar (lambda (p)
+                                        (delq nil
+                                              (list (cons "name" (or (cdr (assq :name p)) ""))
+                                                    (cons "model" (or (cdr (assq :model p)) ""))
+                                                    (cons "status" (format "%s" (or (cdr (assq :status p)) "unknown")))
+                                                    (cons "tier" (format "%s" (or (cdr (assq :tier p)) ""))))))
+                                      providers))))))))
+
+(defun aiaos-cli-elisp--provider-switch (name)
+  "切换到指定 provider NAME（返回结果 JSON）。"
+  (if (and name (fboundp 'aiaos-llm-set-current-provider))
+      (progn
+        (aiaos-llm-set-current-provider name)
+        (json-encode (list (cons "status" "success")
+                           (cons "provider" name)
+                           (cons "message" (format "已切换到 provider: %s" name)))))
+    (json-encode (list (cons "status" "error")
+                       (cons "message" "provider 切换失败：缺少名称或函数未定义")))))
+
+(provide 'aiaos-cli-elisp)

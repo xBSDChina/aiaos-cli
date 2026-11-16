@@ -52,6 +52,11 @@ Options can include: timeout, retries, headers, etc."
   :type '(repeat string)
   :group 'aiaos)
 
+;; 前向声明：aiaos-llm-fallback-chain 在 aiaos-cli-llm.el 中通过 defcustom 定义，
+;; 此处声明以避免核心文件单独编译时出现 free-variable 警告。
+(defvar aiaos-llm-fallback-chain nil
+  "Fallback chain of LLM provider names (defined in aiaos-cli-llm.el).")
+
 (defcustom aiaos-provider-timeout 5400
   "Timeout for LLM provider requests in seconds."
   :type 'integer
@@ -413,10 +418,11 @@ If no fallback is available, probes all providers to find a working one."
 (defvar aiaos-http-curl-timeout 120
   "Timeout in seconds for synchronous HTTP requests.")
 
-(defcustom aiaos-llm-request-timeout 12
+(defcustom aiaos-llm-request-timeout 60
   "Per-provider HTTP timeout (seconds) for LLM requests.
 仅作为连接/首字节超时：dead provider 在该时限内快速失败并切换，
-不会截断正常生成（生成阶段由 stall/generation 超时保护）。"
+不会截断正常生成（生成阶段由 stall/generation 超时保护）。
+60s 保证可用的慢速 provider（推理模型/慢网络）不因首字节延迟被误判超时。"
   :type 'integer
   :group 'aiaos-llm)
 
@@ -832,8 +838,9 @@ Returns a list of provider names, or nil if unavailable."
         (error nil)))))
 
 (defun aiaos-llm--reorder-providers-by-chain (chain)
-  "Reorder `aiaos-llm-providers' so names in CHAIN come first (preserving CHAIN order),
-then any remaining providers in their original order.  Returns the reordered list."
+  "Reorder `aiaos-llm-providers' so names in CHAIN come first (preserving
+CHAIN order), then any remaining providers in their original order.
+Returns the reordered list."
   (when (and chain aiaos-llm-providers)
     (let ((by-name (mapcar (lambda (p) (cons (cdr (assq :name p)) p)) aiaos-llm-providers))
           (ordered nil))
@@ -1212,14 +1219,20 @@ reply in `reply'."
         (attempts nil)
         (last-error nil)
         (success nil)
+        (failed-in-call nil)   ; R-CIRCUIT-BREAKER: 本次调用内已失败的 provider（熔断，避免反复循环）
         (round 0)
         (max-rounds aiaos-llm-fallback-rounds))           ; R-FALLBACK-LOOP: 切换完一轮后从头再循环一轮
     (if (null providers)
         (list (cons 'error "no_providers")
               (cons 'message "没有配置任何 LLM provider"))
-      (while (and (not success) (< round max-rounds))
+      (while (and (not success) (< round max-rounds)
+                  ;; R-CIRCUIT-BREAKER: 本轮不再重试本次调用内已失败的 provider；
+                  ;; 全部失败时提前结束，交由外层自愈重试（重新探测 + 退避）。
+                  (< (length failed-in-call) (length providers)))
         (setq round (1+ round))
-        (dolist (provider providers)
+        (dolist (provider (cl-remove-if
+                           (lambda (p) (member (cdr (assq :name p)) failed-in-call))
+                           providers))
           (when (not success)
             ;; 切换 provider：name/model/endpoint/api-key 随该 provider 配置一并生效
             (aiaos-llm-set-current-provider (cdr (assq :name provider)))
@@ -1285,6 +1298,7 @@ reply in `reply'."
                                 (format "HTTP %s" status))))
             ;; 更新 provider 健康状态（失败，进入 unhealthy 排队重试）
             (aiaos-llm--set-provider-status name :unstable)
+                 (push name failed-in-call)   ; R-CIRCUIT-BREAKER: 本次调用内不再重试该 provider
                  (push (format "%s:%s" name err-msg) attempts)
                  (setq last-error err-msg)))))))
       (or success
@@ -1654,8 +1668,8 @@ are stored in `aiaos-llm--last-run-stats'."
                           (regexp-quote aiaos-llm-task-complete-marker)
                           "" reply-str))
                       reply-str))
-              (setq done t)))))
-        ;; 每轮任务摘要：向 agent buffer 报告本轮执行情况（轮次/工具/回复）
+               (setq done t))))))
+         ;; 每轮任务摘要：向 agent buffer 报告本轮执行情况（轮次/工具/回复）
         (when on-event
           (funcall on-event
                    (list (cons 'type "round_summary")
@@ -1669,7 +1683,7 @@ are stored in `aiaos-llm--last-run-stats'."
                 (cons "tool_count" total-tools)
                 (cons "elisp_rounds" elisp-rounds)
                 (cons "continuations" cont-rounds)))
-    (or final-reply ""))))
+    (or final-reply "")))
 
 (defun aiaos-llm-chat-stream (message &optional system-prompt callback)
   "Convenience: run a full LLM chat for MESSAGE with streaming.

@@ -1226,12 +1226,18 @@ agent-buffer path, so single-source formatting is shared."
                               (gethash "restored" session)
                               (gethash "total" session))
                       'face 'font-lock-doc-face))))
-     ;; bash agent.sh JSON 模式的 result 事件
-     ((string= type "result")
-      (let ((reply (gethash "reply" obj)))
-        (when (and reply (not (string-empty-p reply)))
-          (string-trim reply))))
-     (t nil))))
+      ;; bash agent.sh JSON 模式的 result 事件
+      ((string= type "result")
+       (let ((reply (gethash "reply" obj)))
+         (when (and reply (not (string-empty-p reply)))
+           (string-trim reply))))
+      ;; 任务简报（双重检测生成）
+      ((string= type "briefing")
+       (let ((content (gethash "content" obj)))
+         (when (and content (not (string-empty-p (string-trim content))))
+           (propertize (format "📋 任务简报\n%s" (string-trim content))
+                       'face 'font-lock-doc-face))))
+      (t nil))))
 
 (defun aiaos-cli--dialog-format (output)
   "Format streaming JSONL dialog OUTPUT for display.
@@ -1277,6 +1283,8 @@ agent-buffer path, so single-source formatting is shared."
   "任务自动续行的最大次数，超过后强制回到提示符。")
 (defvar aiaos-cli--last-agent-reply nil
   "最近一次 agent 回复内容（用于任务完成度记录检测）。")
+(defvar aiaos-cli--task-check-briefing nil
+  "最近一次双重检测生成的任务简报文本（含任务摘要）。")
 
 (defun aiaos-cli--task-record-text ()
   "Build a text summary of the agent conversation records for task detection."
@@ -1457,7 +1465,36 @@ STREAM-CB and DONE-CB may be nil (batch mode)."
          (funcall stream-cb (concat (json-encode (list (cons "type" "error")
                                                          (cons "content" err)))
                                     "\n")))
-       (when done-cb (funcall done-cb status out err))))))
+        (when done-cb (funcall done-cb status out err))))))
+
+;;; === 脚本模式：aiaos-cli agent <message> ===
+
+(defun aiaos-cli-agent-run (message)
+  "Run the full agent dialog for MESSAGE in batch/script mode.
+All LLM provider capabilities are available: provider fallback chain,
+tool calling loop, continuous task execution, and dual-check task
+completion. Returns a plist (:data . string) on success, or
+(:status \"error\" :error-message . string) on failure."
+  (aiaos-ensure-llm-providers)
+  (let* ((history-msgs (aiaos-cli--records-to-messages aiaos-cli--agent-history))
+         (system-msg (aiaos-llm-message-system aiaos-cli-elisp-system-prompt))
+         (all-msgs (append (list system-msg)
+                           history-msgs
+                           (list (aiaos-llm-message-user message))))
+         (reply (condition-case err
+                  (aiaos-llm-full-chat all-msgs
+                                       (aiaos-llm-build-tools-schema)
+                                       nil nil nil)
+                  (error (format "%s" err)))))
+    (if (or (null reply) (string-empty-p (string-trim reply)))
+        (list :status "error"
+              :error-code "EMPTY_REPLY"
+              :error-message (or reply "LLM returned empty response"))
+      (list :data reply
+            :status "success"
+            :iterations (or (cdr (assoc "iterations" aiaos-llm--last-run-stats)) 0)
+            :tool-count (or (cdr (assoc "tool_count" aiaos-llm--last-run-stats)) 0)
+            :continuations (or (cdr (assoc "continuations" aiaos-llm--last-run-stats)) 0)))))
 
 (defun aiaos-cli--agent-dialog-batch-file (file)
   "Batch entrypoint reading message+records from FILE (elisp `prin1' pair).
@@ -1502,33 +1539,33 @@ completion detection after the dialog and emits a `task_check' event:
                (princ chunk)
                (setq events (cons chunk events)))
 (lambda (status out err)
-                   ;; 双重检测：根据记录判断任务是否完成，再经任务简报的「任务摘要」项确认
-                   (let* ((complete
-                           (and records (= status 0)
-                                (let* ((rec-text (concat (aiaos-cli--task-record-text-from records)
-                                                         "\n"
-                                                         (and out (format "[assistant] %s" out))))
-                                       (complete-from-records (aiaos-cli--task-complete-from-records-from rec-text nil)))
-                                  ;; CHECK 1 明确未完成则不生成简报
-                                  (and complete-from-records
-                                       ;; CHECK 2: 生成任务简报（含任务摘要项）后二次确认
-                                       (let ((briefing (condition-case e
-                                                            ;; R-CONSISTENT-SESSION: briefing 在任务历史 + 当前对话的
-                                                            ;; 同一会话上下文中生成（而非新会话），保持任务检查连续一致。
-                                                            (let* ((sys-msg (aiaos-llm-message-system aiaos-cli-elisp-system-prompt))
-                                                                   (base-msgs (append (aiaos-cli--records-to-messages records)
-                                                                                      (list (aiaos-llm-message-assistant (or out "")))
-                                                                                      (list (aiaos-llm-message-user
-                                                                                             (aiaos-cli--task-briefing-prompt rec-text)))))
-                                                              (all-msgs (cons sys-msg base-msgs)))
-                                                              (aiaos-llm-full-chat (append all-msgs nil)
-                                                                                   (aiaos-llm-build-tools-schema) 1))
-                                                          (error (format "ERROR: %s" e)))))
-                                          (aiaos-cli--task-complete-from-briefing briefing)))))))
-                    (when (and records (= status 0))
-                      (princ (json-encode (list (cons "type" "task_check")
-                                                (cons "complete" (if complete t :json-false)))))
-                      (princ "\n"))
+                    ;; 双重检测：根据记录判断任务是否完成，再经任务简报的「任务摘要」项确认
+                    (let* ((rec-text (concat (aiaos-cli--task-record-text-from records)
+                                             "\n"
+                                             (and out (format "[assistant] %s" out))))
+                           (complete-from-records
+                            (aiaos-cli--task-complete-from-records-from rec-text nil))
+                           (briefing
+                            (and complete-from-records
+                                 (condition-case e
+                                     (let* ((sys-msg (aiaos-llm-message-system aiaos-cli-elisp-system-prompt))
+                                            (base-msgs (append (aiaos-cli--records-to-messages records)
+                                                               (list (aiaos-llm-message-assistant (or out "")))
+                                                               (list (aiaos-llm-message-user
+                                                                      (aiaos-cli--task-briefing-prompt rec-text)))))
+                                           (all-msgs (cons sys-msg base-msgs)))
+                                       (aiaos-llm-full-chat (append all-msgs nil)
+                                                            (aiaos-llm-build-tools-schema) 1))
+                                   (error (format "ERROR: %s" e)))))
+                           (complete
+                            (and records (= status 0)
+                                 complete-from-records
+                                 (aiaos-cli--task-complete-from-briefing briefing))))
+                     (when (and records (= status 0))
+                       (princ (json-encode (list (cons "type" "task_check")
+                                                 (cons "complete" (if complete t :json-false))
+                                                 (cons "briefing" (or briefing "")))))
+                       (princ "\n"))
                     (princ (json-encode (list (cons "type" "done")
                                               (cons "status" status)
                                               (cons "out" out)
@@ -1619,9 +1656,11 @@ R2903: 流式输出 —— stdout 每到达一块即增量渲染到 buffer，
                                (string= (substring line 0 1) "{"))
                       (let ((obj (aiaos-cli--parse-json line)))
                         (when obj
-                          ;; task_check 事件：记录双重检测结果（不渲染）
-                          (when (string= (gethash "type" obj) "task_check")
-                            (setq task-check-complete (eq (gethash "complete" obj) t)))
+                          ;; task_check 事件：记录双重检测结果与任务简报（不渲染）
+                           (when (string= (gethash "type" obj) "task_check")
+                             (setq task-check-complete (eq (gethash "complete" obj) t))
+                             (setq aiaos-cli--task-check-briefing
+                                   (or (gethash "briefing" obj) "")))
                           (let ((formatted (aiaos-cli--dialog-format-event obj)))
                             (when formatted
                               (let ((is-answer (string= (gethash "type" obj) "answer")))
@@ -1726,36 +1765,44 @@ R2903: 流式输出 —— stdout 每到达一块即增量渲染到 buffer，
                                                                 (or (string-trim err) "unknown error"))
                                                         'face '(:foreground "red" :weight bold))))))
                                ;; 双重任务完成检测：任务完成后才回到提示符，否则自动续行
-                               (if (and (= status 0)
-                                        (not task-check-complete)
-                                        (< aiaos-cli--task-continue-count aiaos-cli--task-continue-max))
-                                   (progn
-                                     (setq aiaos-cli--task-continue-count
-                                           (1+ aiaos-cli--task-continue-count))
-                                     (insert (propertize
-                                              (format "⏳ 任务未完成，自动继续执行（%d/%d）…\n"
-                                                      aiaos-cli--task-continue-count
-                                                      aiaos-cli--task-continue-max)
-                                              'face 'font-lock-comment-face))
-                                     (run-at-time 0.5 nil
-                                       (lambda ()
-                                         (when (buffer-live-p chat-buf)
-                                           (with-current-buffer chat-buf
-                                             (let ((aiaos-cli--last-agent-message
-                                                    (aiaos-cli--task-continuation-message)))
+                                (if (and (= status 0)
+                                         (not task-check-complete)
+                                         (< aiaos-cli--task-continue-count aiaos-cli--task-continue-max))
+                                    (progn
+                                      (setq aiaos-cli--task-continue-count
+                                            (1+ aiaos-cli--task-continue-count))
+                                      (insert (propertize
+                                               (format "⏳ 任务未完成，自动继续执行（%d/%d）…\n"
+                                                       aiaos-cli--task-continue-count
+                                                       aiaos-cli--task-continue-max)
+                                               'face 'font-lock-comment-face))
+                                      (run-at-time 0.5 nil
+                                        (lambda ()
+                                          (when (buffer-live-p chat-buf)
+                                            (with-current-buffer chat-buf
+                                              (let ((aiaos-cli--last-agent-message
+                                                     (aiaos-cli--task-continuation-message)))
                                                 (aiaos-cli-agent-send t)))))))
-                                     (setq aiaos-cli--task-continue-count 0)
+                                    (setq aiaos-cli--task-continue-count 0)
+                                    ;; 展示任务简报（含任务摘要）
+                                    (when (and aiaos-cli--task-check-briefing
+                                               (not (string-empty-p (string-trim aiaos-cli--task-check-briefing))))
+                                      (insert (propertize
+                                               (format "📋 任务简报\n%s\n"
+                                                       (string-trim aiaos-cli--task-check-briefing))
+                                               'face 'font-lock-doc-face))
+                                      (insert "\n"))
                                     ;; R-PROMPT-LINE: 任务完成后回到提示符时，另起一行
                                     ;; 并把光标置于提示符后，准备好接收新消息。
                                     (goto-char (point-max))
                                     (unless (and (> (point) (point-min))
                                                  (eq (char-before) ?\n))
                                       (insert "\n"))
-                                      (insert "> "))
-                             (condition-case _
-                                 (recenter -1)
-                                (error nil))))))
-                     stream-cb)))))))))))))
+                                    (insert "> "))
+                              (condition-case _
+                                  (recenter -1)
+                                 (error nil))))))
+                      stream-cb)))))))))))))
 
 
 

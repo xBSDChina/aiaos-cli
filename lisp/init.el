@@ -19,6 +19,7 @@
 (declare-function aiaos-cli-execute "aiaos-cli-registry.el")
 (declare-function aiaos-cli--build-cmd "aiaos-cli.el")
 (declare-function aiaos-cli--call-sync "aiaos-cli.el")
+(declare-function aiaos-cli-agent-run "aiaos-cli.el")
 
 ;; Help text
 (defconst aiaos-cli--help-text
@@ -41,8 +42,9 @@ Commands:\n\
   skill search <query>        - Search skills\n\
   skill enable <name>         - Enable skill\n\
   skill disable <name>        - Disable skill\n\
-  skill deps <name>           - Show skill dependencies\n\
-  version                     - Show version\n\
+   skill deps <name>           - Show skill dependencies\n\
+   agent <message>             - Run agent script: interact with LLM, execute tools, complete task\n\
+   version                     - Show version\n\
   help                        - Show this help\n\n\
 Options:\n\
   --json                      - Output in JSON format\n\
@@ -159,21 +161,34 @@ ARGS is the list of command line arguments."
                 (error
                  (princ (format "Error: %s\n" (error-message-string err)))
                  1)))))
-         ((string= domain "skill")
-          (if (null rest)
-              (progn
-                (princ "Usage: skill <action> [args]\n")
-                1)
-            (let ((action (car rest))
-                  (args (cdr rest)))
-              (condition-case err
-                  (let ((result (aiaos-cli-execute domain action args)))
-                    (princ (aiaos-cli--format-result result))
-                    0)
-                (error
-                 (princ (format "Error: %s\n" (error-message-string err)))
-                 1)))))
-         (t
+          ((string= domain "skill")
+           (if (null rest)
+               (progn
+                 (princ "Usage: skill <action> [args]\n")
+                 1)
+             (let ((action (car rest))
+                   (args (cdr rest)))
+               (condition-case err
+                   (let ((result (aiaos-cli-execute domain action args)))
+                     (princ (aiaos-cli--format-result result))
+                     0)
+                 (error
+                  (princ (format "Error: %s\n" (error-message-string err)))
+                  1)))))
+          ((string= domain "agent")
+           (if (null rest)
+               (progn
+                 (princ "Usage: agent <message>\n")
+                 1)
+             (let ((message (mapconcat #'identity rest " ")))
+               (condition-case err
+                   (let ((result (aiaos-cli-agent-run message)))
+                     (princ (aiaos-cli--format-result result))
+                     0)
+                 (error
+                  (princ (format "Error: %s\n" (error-message-string err)))
+                  1)))))
+          (t
           (princ (format "Unknown command: %s\n" domain))
           (princ aiaos-cli--help-text)
           1))))))

@@ -42,6 +42,7 @@ Commands:
   system_info check_net      Network information
   skill list                 List skills
   skill load <name>          Load skill
+  agent <message>            Run agent script: LLM + tools + task completion
   version                    Show version
   help                       Show help
 
