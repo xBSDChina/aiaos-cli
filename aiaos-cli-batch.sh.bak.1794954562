@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# aiaos-cli - command line wrapper for the aiaos-cli Emacs package.
-# Usage: aiaos-cli [--json] <command> [args...]
+# aiaos-cli-batch.sh - command line wrapper for the aiaos-cli Emacs package.
+# Usage: aiaos-cli-batch.sh [--json] <command> [args...]
 #
 # Notes:
 #   - Passes argv as JSON via AIAOS_CLI_ARGS_JSON env var so Emacs can
@@ -80,7 +80,10 @@ cat > "$LISP_SRC" << LISP_EOF
       (append (json-read-from-string (getenv "AIAOS_CLI_ARGS_JSON")) nil))
 (when (string= (or (getenv "AIAOS_CLI_JSON") "") "t")
   (setq aiaos-cli--json-mode t))
-(aiaos-cli-main command-line-args-left)
+;; kill-emacs propagates the exit code AND prevents command-line-1 from
+;; re-interpreting leftover args as file paths (long messages would trigger
+;; "filename too long" file-error).
+(kill-emacs (aiaos-cli-main command-line-args-left))
 LISP_EOF
 
 # --no-site-file is the reliable switch (Emacs 30 still loads site-start.d

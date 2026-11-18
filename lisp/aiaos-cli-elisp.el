@@ -155,10 +155,34 @@ aiaos-cli 会自动截取该程序，走同一套 execute_elisp 安全沙箱执�
 
 ;;; === 配置 ===
 
-(defcustom aiaos-cli-elisp-timeout 5
-  "Default timeout in seconds for execute_elisp tool calls."
+(defcustom aiaos-cli-elisp-timeout 600
+  "默认超时秒数（execute_elisp 首次等待时长）。
+等待超过此值后启用幂次（指数）提醒机制：每轮加倍等待，直到
+`aiaos-cli-elisp-timeout-max'。"
   :type 'integer
   :group 'aiaos-cli)
+
+(defcustom aiaos-cli-elisp-timeout-max 2700
+  "单次 execute_elisp 命令的最大等待时间（秒），默认 45 分钟。
+到达后强制终止命令并返回超时错误（不再无限等待/重复）。"
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-elisp-timeout-cumulative-max 7200
+  "同一对话中所有 execute_elisp 命令的累积最大等待时间（秒），默认 120 分钟。
+超过后后续命令立即返回超时，避免整体任务无限等待。"
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defcustom aiaos-cli-elisp-timeout-reminder-interval 600
+  "幂次提醒机制的提醒间隔（秒）。每经过此间隔仍运行中时，
+向 stderr 追加一条“仍在运行”提醒，并将剩余等待时间加倍（指数退避）。"
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defvar aiaos-cli-elisp--cumulative-start nil
+  "本次对话中 execute_elisp 累积等待计时的起始时间（float-time）。
+nil 表示尚未开始。用于 `aiaos-cli-elisp-timeout-cumulative-max' 的累积上限。")
 
 (defcustom aiaos-cli-elisp-max-output 8192
   "Maximum number of characters captured from stdout/stderr."
@@ -323,15 +347,52 @@ input-required 附 :prompt、:policy-id 与 :request-state。"
                                      "-L" aiaos-cli-elisp-load-dir
                                      "--eval" eval-expr)
                       :connection-type 'pipe))
-          (let ((deadline (+ (float-time) (max 1 (or timeout-seconds
-                                                     aiaos-cli-elisp-timeout)))))
+          ;; R-WAIT-POLICY: 幂次（指数）提醒等待机制。
+          ;; 默认等待 aiaos-cli-elisp-timeout（600s），之后每
+          ;; aiaos-cli-elisp-timeout-reminder-interval 秒追加一条“仍在运行”提醒，
+          ;; 并以 2^(n-1) 倍递增剩余等待（指数退避：+interval、+2*interval、+4*interval...），
+          ;; 单次命令上限 aiaos-cli-elisp-timeout-max（45min），累积上限
+          ;; aiaos-cli-elisp-timeout-cumulative-max（120min）。
+          ;; 这避免了命令超时后模型反复重试同一命令的死循环。
+          (let* ((cum-now (if aiaos-cli-elisp--cumulative-start
+                             (- (float-time) aiaos-cli-elisp--cumulative-start)
+                           0))
+                 (base-wait (max 1 (or timeout-seconds aiaos-cli-elisp-timeout)))
+                 (max-wait (max base-wait aiaos-cli-elisp-timeout-max))
+                 (rem-interval aiaos-cli-elisp-timeout-reminder-interval)
+                 (cum-remain (max 0 (- aiaos-cli-elisp-timeout-cumulative-max cum-now)))
+                 (deadline (+ (float-time) (min base-wait cum-remain)))
+                 (reminder-deadline (+ (float-time) rem-interval))
+                 (reminder-n 0))
+            (setq aiaos-cli-elisp--cumulative-start
+                  (or aiaos-cli-elisp--cumulative-start (float-time)))
             (catch 'timeout
               (while (process-live-p proc)
-                (when (> (float-time) deadline)
-                  (setq timed-out t)
-                  (ignore-errors (delete-process proc))
-                  (throw 'timeout nil))
-                (accept-process-output proc 0.2))))
+                (let ((now (float-time)))
+                  ;; 幂次提醒：每 rem-interval 追加提醒并把等待上限按 2^n 递增。
+                  ;; 必须先于超时判定：到达 deadline 时先延长再判定，避免命令刚到达
+                  ;; 上限即被误杀（此时剩余等待应继续按幂次延长）。
+                  (when (>= now reminder-deadline)
+                    (setq reminder-n (1+ reminder-n))
+                    (let ((extend (min (* rem-interval (expt 2 (1- reminder-n)))
+                                       (max 0 (- max-wait (- now start-time))))))
+                      (ignore-errors
+                        (with-current-buffer stderr-buf
+                          (goto-char (point-max))
+                          (insert (format "[aiaos-cli 幂次提醒 #%d] 命令已运行 %.0f 秒，仍在执行；"
+                                          reminder-n (- now start-time))
+                                  (format "将等待上限再延长 %.0f 秒至 %.0f 秒（单次上限 %.0f 秒，累积已用 %.0f 秒）。\n"
+                                          extend
+                                          (min max-wait (+ (- now start-time) extend))
+                                          max-wait
+                                          (- now aiaos-cli-elisp--cumulative-start)))))
+                      (setq deadline (+ now extend)
+                            reminder-deadline (+ now rem-interval))))
+                  (when (> now deadline)
+                    (setq timed-out t)
+                    (ignore-errors (delete-process proc))
+                    (throw 'timeout nil))
+                  (accept-process-output proc 0.2)))))
           (setq elapsed (- (float-time) start-time))
           (let ((stdout-raw (aiaos-cli-elisp--filter-process-msgs stdout-buf))
                 (stderr-raw (aiaos-cli-elisp--filter-process-msgs stderr-buf)))

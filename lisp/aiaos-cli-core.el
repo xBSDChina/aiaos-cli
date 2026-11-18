@@ -418,11 +418,13 @@ If no fallback is available, probes all providers to find a working one."
 (defvar aiaos-http-curl-timeout 120
   "Timeout in seconds for synchronous HTTP requests.")
 
-(defcustom aiaos-llm-request-timeout 60
+(defcustom aiaos-llm-request-timeout 90
   "Per-provider HTTP timeout (seconds) for LLM requests.
 仅作为连接/首字节超时：dead provider 在该时限内快速失败并切换，
 不会截断正常生成（生成阶段由 stall/generation 超时保护）。
-60s 保证可用的慢速 provider（推理模型/慢网络）不因首字节延迟被误判超时。"
+90s 保证可用的慢速 provider（推理模型/慢网络）不因首字节延迟被误判超时；
+只有等待超过 90 秒仍未回应才判定该 provider endpoint 出错。
+单个 provider 可通过其配置的 timeout 字段覆盖此默认值。"
   :type 'integer
   :group 'aiaos-llm)
 
@@ -979,49 +981,85 @@ tool_call_id).  TOOLS is the OpenAI `tools' array.  STREAM non-nil adds
                    (when tools (list :tools tools))
                    (when stream (list :stream t)))))))
 
-(defun aiaos-llm-message-user (content)
-  "Build a user MESSAGE alist with CONTENT."
-  (list (cons :role "user") (cons :content content)))
+(defun aiaos-llm-message-user (content &optional name)
+  "Build a user MESSAGE alist with CONTENT and optional NAME.
+R-MSG-COMPLETE: 支持 user 消息的 name 字段及多模态 content（content 可为字符串或列表）。"
+  (append (list (cons :role "user")
+                (cons :content content))
+          (when name (list (cons :name name)))))
 
-(defun aiaos-llm-message-system (content)
-  "Build a system MESSAGE alist with CONTENT."
-  (list (cons :role "system") (cons :content content)))
+(defun aiaos-llm-message-system (content &optional name)
+  "Build a system MESSAGE alist with CONTENT and optional NAME.
+R-MSG-COMPLETE: 支持 system 消息的 name 字段。"
+  (append (list (cons :role "system")
+                (cons :content content))
+          (when name (list (cons :name name)))))
 
-(defun aiaos-llm-message-assistant (content &optional tool-calls)
-  "Build an assistant MESSAGE alist with CONTENT and optional TOOL-CALLS."
+(defun aiaos-llm-message-developer (content &optional name)
+  "Build a developer MESSAGE alist with CONTENT and optional NAME.
+R-MSG-COMPLETE: developer 角色消息（部分 provider 支持）。"
+  (append (list (cons :role "developer")
+                (cons :content content))
+          (when name (list (cons :name name)))))
+
+(defun aiaos-llm-message-assistant (content &optional tool-calls name refusal reasoning-content)
+  "Build an assistant MESSAGE alist with CONTENT and optional TOOL-CALLS, NAME,
+REFUSAL, REASONING-CONTENT.
+R-MSG-COMPLETE: 覆盖 assistant 消息的完整字段（content/tool_calls/name/refusal/
+reasoning_content）。content 可为字符串或内容数组。"
   (let ((m (list (cons :role "assistant")
                  (cons :content (or content "")))))
     (when tool-calls
       (setq m (append m (list (cons :tool_calls tool-calls)))))
+    (when name
+      (setq m (append m (list (cons :name name)))))
+    (when refusal
+      (setq m (append m (list (cons :refusal refusal)))))
+    (when reasoning-content
+      (setq m (append m (list (cons :reasoning_content reasoning-content)))))
     m))
 
-(defun aiaos-llm-message-tool (tool-call-id content)
-  "Build a tool-result MESSAGE alist with TOOL-CALL-ID and CONTENT."
-  (list (cons :role "tool")
-        (cons :tool_call_id tool-call-id)
+(defun aiaos-llm-message-tool (tool-call-id content &optional name)
+  "Build a tool-result MESSAGE alist with TOOL-CALL-ID, CONTENT, and optional NAME.
+R-MSG-COMPLETE: tool 消息必须含 tool_call_id（OpenAI 协议）；name 可选。"
+  (append (list (cons :role "tool")
+                (cons :tool_call_id tool-call-id)
+                (cons :content (format "%s" content)))
+          (when name (list (cons :name name)))))
+
+(defun aiaos-llm-message-function (name content)
+  "Build a legacy function-role MESSAGE alist with NAME and CONTENT.
+R-MSG-COMPLETE: function 角色（旧版函数调用协议，某些 provider 仍支持）。"
+  (list (cons :role "function")
+        (cons :name name)
         (cons :content (format "%s" content))))
+
+(defun aiaos-llm--alist-val (key alist)
+  "Return value of KEY in ALIST, matching both symbol and string keys.
+响应 JSON 由 `aiaos-json-parse' 解析为字符串键（\"id\"/\"function\"），
+而内部工具调用常用符号键（'id/'function），此辅助函数兼容两者。"
+  (let ((pair (or (assq key alist)
+                  (assoc (if (symbolp key) (symbol-name key) key) alist))))
+    (and pair (cdr pair))))
 
 (defun aiaos-llm-tool-call-to-message (call)
   "Convert a raw tool CALL alist to the assistant-message tool_calls entry.
 The OpenAI response gives {\"id\":..., \"type\":\"function\", \"function\":
-{\"name\":..., \"arguments\":...}}.  Returns the same shape (keyword keys)."
-  (let ((func-obj (if (listp call) (cdr (assq 'function call)) nil)))
-    (list (cons :id (or (cdr (assq 'id call)) ""))
+{\"name\":..., \"arguments\":...}}.  Returns the same shape (keyword keys).
+兼容字符串键与符号键的 call（R-TOOL-COMPLETE：id/type/function{name,arguments} 完备）。"
+  (let ((func-obj (and (listp call) (aiaos-llm--alist-val 'function call))))
+    (list (cons :id (or (aiaos-llm--alist-val 'id call) ""))
           (cons :type "function")
           (cons :function
-                (list (cons :name (and func-obj (cdr (assq 'name func-obj))))
-                      (cons :arguments (and func-obj (cdr (assq 'arguments func-obj)))))))))
+                (list (cons :name (and func-obj (aiaos-llm--alist-val 'name func-obj)))
+                      (cons :arguments (and func-obj (aiaos-llm--alist-val 'arguments func-obj))))))))
 
 (defun aiaos-llm-tool-call-parse-args (call)
   "Parse the arguments JSON string of tool CALL into an alist (keyword keys).
 Returns nil on parse failure or if no arguments."
-  (let ((func-obj (if (listp call)
-                      (or (cdr (assq 'function call))
-                          (cdr (assoc "function" call)))
-                      nil)))
+  (let ((func-obj (and (listp call) (aiaos-llm--alist-val 'function call))))
     (when func-obj
-      (let ((args-str (or (cdr (assq 'arguments func-obj))
-                          (cdr (assoc "arguments" func-obj)))))
+      (let ((args-str (aiaos-llm--alist-val 'arguments func-obj)))
         (when args-str
           (condition-case nil
               (json-read-from-string args-str)
@@ -1029,12 +1067,8 @@ Returns nil on parse failure or if no arguments."
 
 (defun aiaos-llm-tool-call-name (call)
   "Extract tool name from CALL alist."
-  (let ((func-obj (if (listp call)
-                      (or (cdr (assq 'function call))
-                          (cdr (assoc "function" call)))
-                      nil)))
-    (and func-obj (or (cdr (assq 'name func-obj))
-                      (cdr (assoc "name" func-obj))))))
+  (let ((func-obj (and (listp call) (aiaos-llm--alist-val 'function call))))
+    (and func-obj (aiaos-llm--alist-val 'name func-obj))))
 
 (defun aiaos-llm-log (level message)
   "Log a message at given LEVEL."
@@ -1235,11 +1269,15 @@ reply in `reply'."
                            providers))
           (when (not success)
             ;; 切换 provider：name/model/endpoint/api-key 随该 provider 配置一并生效
-            (aiaos-llm-set-current-provider (cdr (assq :name provider)))
+            ;; R-SWITCH-REASON: 同时输出上一个 provider 的失败原因（用户要求）
+            (aiaos-llm-set-current-provider (cdr (assq :name provider)) last-error)
           (let* ((name (cdr (assq :name provider)))
                  (url (aiaos-llm-build-request-url provider))
                  (headers (aiaos-llm-build-request-headers provider))
                  (request-data (aiaos-llm-build-request-data-full provider messages tools (and stream on-event)))
+                 ;; R-TIMEOUT: 优先使用 provider 配置的 timeout 字段，否则用默认 90s
+                 (req-timeout (or (cdr (assq :timeout (cdr (assq :options provider))))
+                                  aiaos-llm-request-timeout))
                  (stream-acc "")
                  (stream-tool-calls nil)
                  (stream-cb (if (and stream on-event)
@@ -1263,9 +1301,9 @@ reply in `reply'."
                                              (aiaos-llm--merge-tool-calls stream-tool-calls delta-tc)))
                                      (funcall on-event obj)))
                               nil))
-                 (resp (if (and stream on-event)
-                           (aiaos-http-stream-request url "POST" headers request-data stream-cb aiaos-llm-request-timeout)
-                         (aiaos-http-post-json url headers request-data aiaos-llm-request-timeout)))
+                  (resp (if (and stream on-event)
+                            (aiaos-http-stream-request url "POST" headers request-data stream-cb req-timeout)
+                          (aiaos-http-post-json url headers request-data req-timeout)))
                   (status (and resp (car resp)))
                   (result (and resp (cdr resp))))
               (if (and resp status (>= status 200) (< status 300)
@@ -1286,13 +1324,23 @@ reply in `reply'."
                                     (aiaos-extract-response-content result))))
                         (tool-calls (or (and stream stream-tool-calls)
                                         (if (stringp result) nil (aiaos-extract-response-tool-calls result)))))
-            ;; 更新 provider 健康状态（成功）
-            (aiaos-llm--set-provider-status name :healthy)
-                    (setq success (list (cons 'reply (or content ""))
-                                        (cons 'tool_calls tool-calls)
-                                        (cons 'provider name)
-                                        (cons 'session_id (or "" ""))
-                                        (cons 'streamed (and stream on-event)))))
+                    (if (or (and content (string-match-p "[^[:space:]]" content))
+                            tool-calls)
+                        ;; 更新 provider 健康状态（成功）
+                        (progn
+                          (aiaos-llm--set-provider-status name :healthy)
+                          (setq success (list (cons 'reply (or content ""))
+                                              (cons 'tool_calls tool-calls)
+                                              (cons 'provider name)
+                                              (cons 'session_id (or "" ""))
+                                              (cons 'streamed (and stream on-event)))))
+                      ;; R-EMPTY-RESPONSE: HTTP 200 但内容为空且无工具调用 → 视为失败，换下一个 provider，
+                      ;; 避免空响应被当作成功导致外层 full-chat 死循环
+                      (progn
+                        (aiaos-llm--set-provider-status name :unstable)
+                        (push name failed-in-call)
+                        (push (format "%s:%s" name "empty_response") attempts)
+                        (setq last-error (format "%s: empty_response" name)))))
               (let ((err-msg (if (and result (listp result))
                                   (or (aiaos-extract-response-error result) (format "HTTP %s" status))
                                 (format "HTTP %s" status))))
@@ -1300,7 +1348,7 @@ reply in `reply'."
             (aiaos-llm--set-provider-status name :unstable)
                  (push name failed-in-call)   ; R-CIRCUIT-BREAKER: 本次调用内不再重试该 provider
                  (push (format "%s:%s" name err-msg) attempts)
-                 (setq last-error err-msg)))))))
+                 (setq last-error (format "%s: %s" name err-msg))))))))
       (or success
           (list (cons 'error "fallback_exhausted")
                 (cons 'message (or last-error "所有 LLM provider 均不可用"))
@@ -1308,8 +1356,10 @@ reply in `reply'."
                 (cons 'attempts (nreverse attempts)))))))
 
 (defun aiaos-llm-execute-tool-arg (call)
-  "Execute a single tool CALL (OpenAI format), return (id name result-string)."
-  (let* ((id (or (cdr (assq 'id call)) ""))
+  "Execute a single tool CALL (OpenAI format), return (id name result-string).
+R-TOOL-COMPLETE: id 通过 `aiaos-llm--alist-val' 兼容字符串/符号键提取，
+确保 tool 消息的 tool_call_id 与 assistant 消息 tool_calls 的 id 一致。"
+  (let* ((id (or (aiaos-llm--alist-val 'id call) ""))
           (name (aiaos-llm-tool-call-name call))
           (args (aiaos-llm-tool-call-parse-args call))
           (result (if name
@@ -1499,6 +1549,25 @@ emacs --batch 子进程隔离执行 + 超时/输出/错误捕获）；不可用�
   :type 'integer
   :group 'aiaos-cli)
 
+(defcustom aiaos-llm-tool-loop-max 2
+  "同一工具被连续重复调用（相同名称+参数）的触发次数。
+第 1 次重复（第 2 次调用）即触发指数级退避：shell 工具内部等待上一个命令
+完成（30s 起指数退避 30/60/120/240...），并返回“请勿再调用此命令”提示，
+任务链路转为等待，模型可基于结果给出最终答复。此阈值为安全上限：若模型
+持续忽略“勿再重复”提示（第 2 次重复，即第 3 次调用仍给出相同命令）则判定
+死循环并终止。真正的等待逻辑由 shell 工具的指数退避承担。"
+  :type 'integer
+  :group 'aiaos-cli)
+
+(defcustom aiaos-llm-max-rounds 1000000
+  "agent 模式（max-iters 为 nil）下 `aiaos-llm-full-chat' 的最大迭代轮数。
+默认 100 万，等效“无限任务轮次”：循环持续运行，直到任务完成判定
+（最终答复 / 工具调用死循环检测 / 空响应兜底）触发 done。
+真正的无限循环防护由工具去重 + 工具死循环检测 + 空响应兜底提供，
+此处仅作为极高层级的安全上限（防止极端情况下的进程失控）。"
+  :type 'integer
+  :group 'aiaos-cli)
+
 (defvar aiaos-llm--last-run-stats nil
   "最近一次 `aiaos-llm-full-chat' 的执行统计（iterations/tool_count 等）。")
 
@@ -1526,7 +1595,7 @@ are stored in `aiaos-llm--last-run-stats'."
   (let ((msgs messages)
         (tools (or tools (and (fboundp 'aiaos-llm-build-tools-schema)
                               (aiaos-llm-build-tools-schema))))
-        (iters (or max-iters 10))
+        (iters (or max-iters aiaos-llm-max-rounds))
         (i 0)
         (elisp-rounds 0)
         (tool-rounds 0)
@@ -1535,6 +1604,10 @@ are stored in `aiaos-llm--last-run-stats'."
         (round-tools nil)
         (round-replied nil)
         (cont-rounds 0)
+        (tool-loop-count 0)
+        (tool-loop-last nil)
+        (tool-loop-tools nil)
+        (tool-result-cache nil)
         (final-reply nil)
         (done nil))
     (while (and (not done)
@@ -1554,7 +1627,7 @@ are stored in `aiaos-llm--last-run-stats'."
          ((or permanent (and error-msg (string= error-msg "fallback_exhausted")))
           (setq done t)
           (error "fallback_exhausted: 所有 LLM provider 均不可用"))
-         (tool-calls
+          (tool-calls
           ;; 连续工具调用：追加 assistant 消息（含 tool_calls）+ 各工具结果，再继续
           (setq tool-rounds (1+ tool-rounds)
                 total-tools (+ total-tools (length tool-calls))
@@ -1566,17 +1639,53 @@ are stored in `aiaos-llm--last-run-stats'."
                    (tname (nth 1 info))
                    (tresult (nth 2 info)))
               (setq round-tools (append round-tools (list tname)))
-              (when on-event
-                (funcall on-event (list (cons 'type "tool_call")
-                                        (cons 'name tname)
-                                        (cons 'args (and call (cdr (assq 'function call)))))))
-              (when on-event
-                (funcall on-event (list (cons 'type "tool_result")
-                                        (cons 'name tname)
-                                        (cons 'result tresult))))
-              (setq msgs (append msgs
-                                 (list (aiaos-llm-message-tool tid tresult)))))))
-         ((and reply (> (length reply) 0))
+               ;; R-TOOL-LOOP: 检测同一工具被连续重复调用（死循环），
+               ;; 如模型反复调用 list-dir/execute_elisp 而不产出最终答复。
+               ;; 以 "名称+参数" 为循环键，避免误伤对多个不同目录的合法探索。
+               ;; R-SHELL-NO-TERMINATE: shell 工具的重复调用由 shell 工具自身的
+               ;; 指数退避（30s→60s→120s...）+ 幂次提醒 + 累积超时(90min)处理，
+               ;; 此处不中断任务链路（只等待，不终止）；仅对其它工具生效。
+               (when (not (string= tname "shell"))
+                 (let ((loop-key (concat tname "|" (prin1-to-string (and call (cdr (assq 'function call)))))))
+                   (if (string= loop-key tool-loop-last)
+                       (setq tool-loop-count (1+ tool-loop-count)
+                             tool-loop-tools (append tool-loop-tools (list tname)))
+                     (setq tool-loop-count 1
+                           tool-loop-last loop-key
+                           tool-loop-tools (list tname))))
+                 (when (> tool-loop-count aiaos-llm-tool-loop-max)
+                   (setq done t
+                         tool-loop-count 0
+                         tool-loop-last nil
+                         final-reply (format
+                                      "检测到工具调用死循环：模型连续 %d 次调用同一工具 \"%s\"（相同参数）未产出最终答复，已自动终止。已执行工具：%s"
+                                      aiaos-llm-tool-loop-max tname
+                                      (mapconcat #'identity tool-loop-tools ", ")))))
+              ;; R-TOOL-DEDUP: 同一工具+相同参数已执行过 → 返回缓存结果并提示，
+              ;; 避免模型反复调用同一工具（如 shell/list-dir）而不产出最终答复。
+              (let* ((cache-key (concat tname "|" (prin1-to-string (and call (cdr (assq 'function call))))))
+                     (cached (assoc cache-key tool-result-cache)))
+                (if cached
+                    (progn
+                      (setq tresult (format "[重复调用提示：您已用相同参数调用过工具 \"%s\"，结果为：]\n%s\n\n请基于此结果直接给出最终答复，不要再重复调用该工具。"
+                                             tname (cdr cached)))
+                      (when on-event
+                        (funcall on-event (list (cons 'type "tool_result")
+                                                (cons 'name tname)
+                                                (cons 'result tresult))))
+                      (setq msgs (append msgs (list (aiaos-llm-message-tool tid tresult)))))
+                  (setq tool-result-cache (cons (cons cache-key tresult) tool-result-cache))
+                  (progn
+                    (when on-event
+                      (funcall on-event (list (cons 'type "tool_call")
+                                              (cons 'name tname)
+                                              (cons 'args (and call (cdr (assq 'function call)))))))
+                    (when on-event
+                      (funcall on-event (list (cons 'type "tool_result")
+                                              (cons 'name tname)
+                                              (cons 'result tresult))))
+                    (setq msgs (append msgs (list (aiaos-llm-message-tool tid tresult))))))))))
+          ((and reply (string-match-p "[^[:space:]]" reply))
           (setq round-replied t)
           (let* ((reply-str reply)
                  (complete-p (string-match-p
@@ -1668,9 +1777,14 @@ are stored in `aiaos-llm--last-run-stats'."
                           (regexp-quote aiaos-llm-task-complete-marker)
                           "" reply-str))
                       reply-str))
-               (setq done t))))))
-         ;; 每轮任务摘要：向 agent buffer 报告本轮执行情况（轮次/工具/回复）
-        (when on-event
+                (setq done t)))))
+          ;; 4) 空响应兜底：reply 为空且无工具调用（防御性，避免死循环）
+          (t
+           (setq round-replied t)
+           (setq final-reply "（LLM 返回了空响应，未获得有效回复）")
+           (setq done t)))
+          ;; 每轮任务摘要：向 agent buffer 报告本轮执行情况（轮次/工具/回复）
+         (when on-event
           (funcall on-event
                    (list (cons 'type "round_summary")
                          (cons 'round round-no)
@@ -1683,8 +1797,19 @@ are stored in `aiaos-llm--last-run-stats'."
                 (cons "tool_count" total-tools)
                 (cons "elisp_rounds" elisp-rounds)
                 (cons "continuations" cont-rounds)))
-    (or final-reply "")))
-
+    ;; R-NO-EMPTY-REPLY: 兜底——最终答复为空/空白时（如迭代耗尽仍未产出最终答复，
+    ;; 或工具调用死循环未能触发单轮检测，或模型只返回了空/空白内容），
+    ;; 返回可读的说明而非空串，避免调用方（agent 模式）误判为 EMPTY_REPLY。
+    ;; 注意：不能用 (or final-reply ...) —— 空字符串在 Elisp 中为真值，
+    ;; 会导致空串直接作为结果返回。
+    (if (and final-reply (not (string-empty-p (string-trim final-reply))))
+        final-reply
+      (if (> total-tools 0)
+          (format "任务在 %d 轮交互后未产生最终答复（已执行 %d 次工具调用：%s），已自动终止。"
+                  i total-tools
+                  (or (and round-tools (mapconcat #'identity round-tools ", ")) "无"))
+        "LLM 未返回有效回复。"))))
+  
 (defun aiaos-llm-chat-stream (message &optional system-prompt callback)
   "Convenience: run a full LLM chat for MESSAGE with streaming.
 SYSTEM-PROMPT is prepended as a system message if non-nil.  CALLBACK is called

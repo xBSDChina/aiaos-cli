@@ -152,13 +152,17 @@ Each element is a list: (name endpoint model api-key &optional options)."
         (aiaos-llm-get-provider current-name)
       (car aiaos-llm-providers))))
 
-(defun aiaos-llm-set-current-provider (name)
-  "Set the current active LLM provider to NAME."
+(defun aiaos-llm-set-current-provider (name &optional reason)
+  "Set the current active LLM provider to NAME.
+If REASON is non-nil, it is the failure reason of the previous provider
+that caused this switch; it is included in the switch log."
   (let ((provider (aiaos-llm-get-provider name)))
     (if provider
         (progn
           (setq aiaos-llm-current-provider name)
-          (aiaos-llm-log "info" (format "Switched to provider: %s" name))
+          (if reason
+              (aiaos-llm-log "info" (format "Switched to provider: %s (switch reason: %s)" name reason))
+            (aiaos-llm-log "info" (format "Switched to provider: %s" name)))
           t)
       (aiaos-llm-log "error" (format "Provider not found: %s" name))
       nil)))
@@ -176,8 +180,8 @@ nil/连接失败 -> :down"
          (headers (aiaos-llm-build-request-headers provider))
          (body (aiaos-llm-build-request-data-full
                 provider (list (aiaos-llm-message-user "ping")) nil nil))
-         (resp (condition-case err
-                   (aiaos-http-post-json url headers body 15)
+          (resp (condition-case err
+                   (aiaos-http-post-json url headers body aiaos-llm-request-timeout)
                  (error nil))))
     (cond
      ((and resp (car resp) (>= (car resp) 200) (< (car resp) 300))
@@ -887,16 +891,167 @@ keeps vectors/hash-tables/lists intact."
       (format "Tool not found: %s" tool-name))))
 
 ;; 注册内置工具（带参数 schema，供 LLM 正确生成调用参数）
+;; R-SHELL-ASYNC: shell 工具改为异步执行 + 重复命令去重等待。
+;; 同一 shell 命令被模型重复调用时，不再重复启动进程，而是等待上一个
+;; 相同命令完成（30s 起指数退避：30/60/120/240...，超过 600s 幂次提醒），
+;; 返回其结果，避免模型反复调用同一命令的死循环。
+(defcustom aiaos-cli-shell-wait-base 30
+  "重复 shell 命令的首次等待时长（秒）。模型再次调用同一命令时先等待此时间；
+后续仍重复则按 `aiaos-cli-shell-wait-multiplier' 指数递增（30/60/120/240...）。"
+  :type 'integer
+  :group 'aiaos-cli)
+(defcustom aiaos-cli-shell-wait-multiplier 2
+  "重复 shell 命令等待的指数递增倍数（默认 2：30→60→120→240...）。"
+  :type 'integer
+  :group 'aiaos-cli)
+(defcustom aiaos-cli-shell-wait-reminder 600
+  "幂次提醒阈值（秒）。重复 shell 命令累计等待超过此值时，
+向 stderr 追加“幂次提醒”并继续按指数递增等待。"
+  :type 'integer
+  :group 'aiaos-cli)
+(defcustom aiaos-cli-shell-wait-max 2700
+  "单次重复 shell 命令的最大等待时间（秒），默认 45 分钟。
+到达后终止等待并返回提示（不无限等待）。"
+  :type 'integer
+  :group 'aiaos-cli)
+(defcustom aiaos-cli-shell-wait-cumulative-max 5400
+  "重复 shell 命令的累积等待总上限（秒），默认 90 分钟。
+同一命令被模型反复重复调用时，累计退避等待超过此上限则强制中止任务链路，
+避免模型持续忽略“勿再重复”提示造成无限等待。"
+  :type 'integer
+  :group 'aiaos-cli)
+(defvar aiaos-llm--shell-procs (make-hash-table :test 'equal)
+  "正在运行的 shell 命令表：key=命令字符串，value=(进程 . 启动时间)。")
+(defvar aiaos-llm--shell-results (make-hash-table :test 'equal)
+  "已完成的 shell 命令结果表：key=命令字符串，value=结果字符串。")
+(defvar aiaos-llm--shell-cumulative-wait (make-hash-table :test 'equal)
+  "每个 shell 命令的累积退避等待时间（秒）：key=命令字符串，value=累计秒数。
+用于 90 分钟累积上限强制中止。")
+
+(defun aiaos-llm--shell-wait-for-proc (proc buf start-time)
+  "等待 PROC（输出到 BUF）完成；30s 起指数退避等待 + 超过600s 幂次提醒。
+返回 (输出字符串 . 耗时秒) 或 (输出字符串 . (耗时秒 . timed-out))。"
+  (let* ((base-wait (float aiaos-cli-shell-wait-base))
+         (mult (float aiaos-cli-shell-wait-multiplier))
+         (reminder-limit (float aiaos-cli-shell-wait-reminder))
+         (max-wait (float aiaos-cli-shell-wait-max))
+         (backoff base-wait)
+         (reminder-n 0)
+         (last-reminder (float-time))
+         (deadline (+ (float-time) base-wait))
+         (timed-out nil))
+    (catch 'done
+      (while (process-live-p proc)
+        (let* ((now (float-time))
+               (elapsed (- now start-time)))
+          ;; 幂次提醒：持续等待超过 600s 后，每 600s 追加提醒并把等待上限按 2^n 递增
+          (when (>= now (+ last-reminder reminder-limit))
+            (setq reminder-n (1+ reminder-n)
+                  last-reminder now
+                  backoff (* backoff mult))
+            (ignore-errors
+              (with-current-buffer buf
+                (goto-char (point-max))
+                (insert (format "[aiaos-cli 幂次提醒 #%d] 已等待 %.0f 秒，shell 命令仍在执行；将等待上限加倍至 %.0f 秒。\n"
+                                reminder-n elapsed (* backoff mult))))))
+          (when (> now deadline)
+            (setq timed-out t)
+            (ignore-errors (delete-process proc))
+            (throw 'done nil))
+          (accept-process-output proc 0.5))))
+    (list (with-current-buffer buf (buffer-string))
+          (- (float-time) start-time)
+          timed-out)))
+
+(defvar aiaos-llm--shell-repeat-count (make-hash-table :test 'equal)
+  "每个 shell 命令字符串被重复调用的次数。用于跨次指数退避（30→60→120...）。")
+
+(defun aiaos-llm--shell-wait-duplicate (key cached-result)
+  "重复 shell 命令去重等待：30s 起指数退避（30/60/120...），超过600s 幂次提醒。
+KEY 为命令缓存键（名称+参数），CACHED-RESULT 为上一次相同命令的结果字符串。
+第 1 次重复等待 `aiaos-cli-shell-wait-base' 秒，第 N 次重复等待 base*mult^(N-1)
+（指数递增），超过 `aiaos-cli-shell-wait-reminder' 秒触发幂次提醒并继续递增，
+单次上限为 `aiaos-cli-shell-wait-max'；累积等待超过
+`aiaos-cli-shell-wait-cumulative-max'（默认 90 分钟）则强制中止任务链路。
+等待期间模型若给出最终答复则自然退出；返回带“勿再重复”提示的缓存结果。"
+  (let* ((base (float aiaos-cli-shell-wait-base))
+         (mult (float aiaos-cli-shell-wait-multiplier))
+         (reminder-limit (float aiaos-cli-shell-wait-reminder))
+         (max-wait (float aiaos-cli-shell-wait-max))
+         (cum-max (float aiaos-cli-shell-wait-cumulative-max))
+         (n (1+ (gethash key aiaos-llm--shell-repeat-count 0)))
+         (wait-now (min max-wait (* base (expt mult (1- n)))))
+         (total-wait 0)
+         (start (float-time))
+         (reminder-n 0)
+         (last-reminder start)
+         (forced-stop nil))
+    (puthash key n aiaos-llm--shell-repeat-count)
+    ;; R-CUMULATIVE-CAP: 累积退避等待超过 90 分钟 → 强制中止任务链路
+    (when (> (+ (gethash key aiaos-llm--shell-cumulative-wait 0) wait-now) cum-max)
+      (setq wait-now (max 0 (- cum-max (gethash key aiaos-llm--shell-cumulative-wait 0)))
+            forced-stop t)
+      (message "[aiaos-cli 幂次提醒] 重复 shell 命令累积等待将超过 %.0f 分钟，强制中止任务链路。"
+               (/ cum-max 60.0)))
+    (message "[aiaos-cli] 重复 shell 命令 #%d：指数退避等待 %.0f 秒（上次 %.0f 秒）。"
+             n wait-now (if (> n 1) (* base (expt mult (1- (1- n)))) 0.0))
+    (while (and (< total-wait max-wait) (< total-wait wait-now))
+      (sleep-for (min 0.5 (max 0.1 (- wait-now total-wait))))
+      (setq total-wait (- (float-time) start))
+      ;; 幂次提醒：累计等待超过 600s 后，每 600s 追加提醒并按指数递增等待
+      (when (>= total-wait (+ (- last-reminder start) reminder-limit))
+        (setq reminder-n (1+ reminder-n)
+              last-reminder (float-time)
+              wait-now (min max-wait (* wait-now mult)))
+        (message "[aiaos-cli 幂次提醒 #%d] 重复 shell 命令已等待 %.0f 秒，继续按指数递增等待至 %.0f 秒。"
+                 reminder-n total-wait wait-now)))
+    (puthash key (+ (gethash key aiaos-llm--shell-cumulative-wait 0) total-wait)
+             aiaos-llm--shell-cumulative-wait)
+    (if forced-stop
+        (format "[重复 shell 命令：累积退避等待已达 %.0f 分钟上限，任务链路强制中止。模型持续重复调用同一命令，未基于结果给出最终答复。]\n%s"
+                (/ cum-max 60.0) cached-result)
+      (format "[重复 shell 命令去重：已指数退避等待 %.0f 秒（第 %d 次重复），等待上一个相同命令完成，返回其结果。]\n%s\n\n请勿再调用此命令，直接基于结果给出最终答复。"
+              total-wait n cached-result))))
+
 (aiaos-llm-register-tool
  "shell"
  (lambda (args)
-   (let ((command (or (cdr (assq :command args))
-                      (cdr (assq 'command args)))))
-     (if command
-         (with-temp-buffer
-           (shell-command command t nil)
-           (buffer-string))
-       "No command provided")))
+   (let* ((command (or (cdr (assq :command args))
+                       (cdr (assq 'command args))))
+          (key (and command (format "%s" command)))
+          (running (and key (gethash key aiaos-llm--shell-procs)))
+          (cached (and key (gethash key aiaos-llm--shell-results))))
+     (cond
+      ;; 1) 同一命令正在运行 → 等待其完成（不重复启动进程）
+      (running
+       (let* ((proc (car running))
+              (start (cdr running))
+              (out (aiaos-llm--shell-wait-for-proc proc (process-buffer proc) start)))
+         (puthash key (car out) aiaos-llm--shell-results)
+         (remhash key aiaos-llm--shell-procs)
+         (if (nth 2 out)
+             (format "[重复 shell 命令：已等待 %.0f 秒，原命令超时终止。]" (nth 1 out))
+           (format "[重复 shell 命令去重：等待上一个相同命令完成（%.0f 秒），返回其结果]\n%s"
+                   (nth 1 out) (car out)))))
+       ;; 2) 已缓存（之前完成过）→ 30s 起指数退避去重等待，再返回缓存结果
+       (cached
+        (aiaos-llm--shell-wait-duplicate key cached))
+      ;; 3) 新命令 → 异步启动并等待完成
+      (command
+       (let* ((buf (generate-new-buffer " *aiaos-shell*"))
+              (start (float-time))
+              (proc (make-process
+                     :name "aiaos-shell"
+                     :buffer buf
+                     :command (list "/bin/sh" "-c" command)
+                     :connection-type 'pipe))
+              (out (aiaos-llm--shell-wait-for-proc proc buf start)))
+         (puthash key (car out) aiaos-llm--shell-results)
+         (ignore-errors (kill-buffer buf))
+         (if (nth 2 out)
+             (format "[shell 命令超时（等待 %.0f 秒）] 已终止。" (nth 1 out))
+           (car out))))
+      (t "No command provided"))))
   "Execute a shell command and return its stdout"
   '(("type" . "object")
     ("properties"

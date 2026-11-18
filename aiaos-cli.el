@@ -37,7 +37,14 @@
 (require 'json)
 (require 'url)
 
+;; R-COMPILE-DECLARE: 声明 aiaos-cli-llm.el 中定义的函数，消除 byte-compile
+;; "not known to be defined" 警告（aiaos-cli-llm 仅在 batch 运行时 require）。
+(declare-function aiaos-llm-build-tools-schema "aiaos-cli-llm.el" ())
+
 ;; TUI 模块集成
+;; Add lisp directory to load-path
+(add-to-list (quote load-path) (expand-file-name "lisp" (file-name-directory (or load-file-name (buffer-file-name) "~/.emacs.d/aiaos-cli"))))
+
 (require 'aiaos-cli-core)
 (require 'cl-lib)
 (require 'aiaos-cli-state)
@@ -49,6 +56,9 @@
 (require 'aiaos-cli-router)
 (require 'aiaos-cli-app)
 (require 'aiaos-cli-command)
+(require 'aiaos-cli-registry)
+(require 'aiaos-cli-elisp)
+(require 'aiaos-cli-sim)
 
 (defgroup aiaos-cli nil
   "AIAOS-CLI Emacs frontend."
@@ -66,7 +76,7 @@ Searches aiaos-bin, then PATH, then ~/aiaos/bin/aiaos."
   :type '(choice (const json) (const table) (const raw))
   :group 'aiaos-cli)
 
-(defcustom aiaos-cli-async-timeout 120
+(defcustom aiaos-cli-async-timeout 5400
   "Timeout (seconds) for async aiaos-cli invocations.
 
 R2902: LLM provider 交互通常耗时较长（模型推理、工具调用、流式
@@ -91,7 +101,7 @@ R2902: LLM provider 交互通常耗时较长（模型推理、工具调用、流
   :group 'aiaos-cli)
 
 (defcustom aiaos-cli-skills-dir
-  (expand-file-name "~/aiaos/aiaos-cli/skills")
+  (expand-file-name "~/.emacs.d/aiaos-cli/skills")
   "Directory containing aiaos-cli skills (each skill is a subdirectory).
 
 Override if you install skills elsewhere.  Used by
@@ -114,6 +124,28 @@ Override if you install skills elsewhere.  Used by
       (expand-file-name path)
     path))
 
+(defun aiaos-cli--expand-arg (arg)
+  "Expand ~ in ARG so it works as a process argument.
+
+call-process/make-process run the program directly WITHOUT a shell, so a
+literal \"~/foo\" is passed through untouched and the binary cannot find
+the file.  This expands a leading ~ (\"~\", \"~/foo\", \"~user/foo\") and
+also handles \"--key=~/foo\" style option values.  Non-string args and
+strings with no ~ are returned unchanged."
+  (cond
+   ((not (stringp arg)) arg)
+   ;; Leading tilde: ~, ~/foo, ~user/foo
+   ((string-prefix-p "~" arg)
+    (condition-case nil (expand-file-name arg) (error arg)))
+   ;; --key=~/foo style: expand the value after '='
+   ((string-match-p "=~" arg)
+    (let ((eq-pos (string-match "=~" arg)))
+      (concat (substring arg 0 (1+ eq-pos))
+              (condition-case nil
+                  (expand-file-name (substring arg (1+ eq-pos)))
+                (error (substring arg (1+ eq-pos)))))))
+   (t arg)))
+
 (defun aiaos-cli--resolve-bin ()
   "Return absolute path to aiaos binary, or nil if not found.
 
@@ -133,6 +165,12 @@ R2900: 修复 file-executable-p 对裸名 \"aiaos\" 返回 t 的 bug——
            (file-name-absolute-p bin)
            (file-executable-p bin))
       bin)
+     ;; R2904: 优先使用新版 aiaos-cli binary（含 Python bridge + 17 provider fallback）
+     ;; 必须先于 PATH 检查，避免命中 ~/aiaos/bin/aiaos 旧版（走旧 agent 循环 → minimax 402）
+     ((file-executable-p (expand-file-name "~/aiaos/aiaos-cli/bin/aiaos-cli"))
+      (let ((default-bin (expand-file-name "~/aiaos/aiaos-cli/bin/aiaos-cli")))
+        (setq aiaos-cli-bin default-bin)
+        default-bin))
      ;; 2) PATH 中的 aiaos / aiaos-cli（executable-find 返回绝对路径）
      ((or (executable-find "aiaos")
           (executable-find "aiaos-cli"))
@@ -140,13 +178,9 @@ R2900: 修复 file-executable-p 对裸名 \"aiaos\" 返回 t 的 bug——
                        (executable-find "aiaos-cli"))))
         (setq aiaos-cli-bin found)
         found))
-     ;; 3) 显式绝对路径候选
+     ;; 3) 显式绝对路径候选（旧版兜底）
      ((file-executable-p (expand-file-name "~/aiaos/bin/aiaos"))
       (let ((default-bin (expand-file-name "~/aiaos/bin/aiaos")))
-        (setq aiaos-cli-bin default-bin)
-        default-bin))
-     ((file-executable-p (expand-file-name "~/aiaos/aiaos-cli/bin/aiaos-cli"))
-      (let ((default-bin (expand-file-name "~/aiaos/aiaos-cli/bin/aiaos-cli")))
         (setq aiaos-cli-bin default-bin)
         default-bin))
      (t nil))))
@@ -192,8 +226,10 @@ ARGS is a flat list of additional CLI args/options."
 (defun aiaos-cli--call-sync (cmd)
   "Invoke CMD synchronously, return (status . stdout-string).
 
-CMD is a list of strings.  Errors are signaled with `user-error'."
-  (let ((buf (get-buffer-create (format "*aiaos-cli-tmp-%s*" (random 1000000))))
+CMD is a list of strings.  Errors are signaled with `user-error'.
+Each argument has ~ expanded via `aiaos-cli--expand-arg'."
+  (let ((cmd (mapcar #'aiaos-cli--expand-arg cmd))
+        (buf (get-buffer-create (format "*aiaos-cli-tmp-%s*" (random 1000000))))
         status)
     (unwind-protect
         (progn
@@ -202,39 +238,60 @@ CMD is a list of strings.  Errors are signaled with `user-error'."
       (when (buffer-live-p buf)
         (kill-buffer buf)))))
 
-(defun aiaos-cli--call-async (cmd callback)
+(defun aiaos-cli--call-async (cmd callback &optional stream-callback)
   "Invoke CMD asynchronously; call CALLBACK with (status stdout stderr).
 
 CMD is a list of strings.  CALLBACK receives three args.
+STREAM-CALLBACK, if non-nil, is a function of one string argument called
+with each chunk of stdout as it arrives (SSE/JSONL incremental streaming).
+When STREAM-CALLBACK is given a :filter is installed that both appends the
+chunk to the internal buffer (so CALLBACK still sees the full stdout) and
+forwards it to STREAM-CALLBACK for live display.
 R621 修复: 之前用 start-process 时 stderr 被丢弃，err-buf 永远为空。
 现在用 make-process + connection-type t + connection-function 真正分离
 stdout/stderr，让调用方（如 aiaos-cli-run）的失败分支能拿到 stderr。
 R2600 修复 (TD-003): 此前 aiaos-cli-async-timeout 变量已定义但从未使用，
 进程可能永远挂起。现在增加超时保护：超时后 kill 进程，
 以 status=124（类似 GNU coreutils timeout 的约定）调用 callback。"
-  (let ((process-connection-type nil)
-        out-buf err-buf proc timer killed)
+  (let ((cmd (mapcar #'aiaos-cli--expand-arg cmd))
+        (process-connection-type nil)
+        out-buf err-buf proc timer killed
+        stream-filter)
     (setq out-buf (get-buffer-create (format "*aiaos-cli-out-%s*" (random 1000000)))
           err-buf (get-buffer-create (format "*aiaos-cli-err-%s*" (random 1000000))))
-    (setq proc (make-process
-                :name "aiaos-cli"
-                :buffer out-buf
-                :noquery t
-                :stderr err-buf
-                :command cmd
-                :sentinel
-                (lambda (p _event)
-                  (when (memq (process-status p) '(signal exit))
-                    (cancel-timer timer)
-                    (let ((status (process-exit-status p))
-                          (out (with-current-buffer out-buf (buffer-string)))
-                          (err (with-current-buffer err-buf (buffer-string))))
-                      (kill-buffer out-buf)
-                      ;; R621: unwind-protect 兜底，确保 callback 抛异常时 err-buf 不泄漏。
-                      (unwind-protect
-                          (funcall callback status out err)
-                        (when (buffer-live-p err-buf)
-                        (kill-buffer err-buf))))))))
+    ;; 流式过滤：把每个 stdout 块同时写入 out-buf（供 CALLBACK 汇总）并转发给
+    ;; STREAM-CALLBACK（供实时显示）。仅当 STREAM-CALLBACK 非空时安装 :filter，
+    ;; 否则保持原有 make-process 默认行为（输出直接进 buffer），避免回归。
+    (when stream-callback
+      (setq stream-filter
+            (lambda (_p chunk)
+              (with-current-buffer out-buf
+                (goto-char (point-max))
+                (insert chunk))
+              (condition-case nil
+                  (funcall stream-callback chunk)
+                (error nil)))))
+    (let ((plist (list :name "aiaos-cli"
+                       :buffer out-buf
+                       :noquery t
+                       :stderr err-buf
+                       :command cmd
+                       :sentinel
+                       (lambda (p _event)
+                         (when (memq (process-status p) '(signal exit))
+                           (cancel-timer timer)
+                           (let ((status (process-exit-status p))
+                                 (out (with-current-buffer out-buf (buffer-string)))
+                                 (err (with-current-buffer err-buf (buffer-string))))
+                             (kill-buffer out-buf)
+                             ;; R621: unwind-protect 兜底，确保 callback 抛异常时 err-buf 不泄漏。
+                             (unwind-protect
+                                 (funcall callback status out err)
+                               (when (buffer-live-p err-buf)
+                                 (kill-buffer err-buf)))))))))
+      (when stream-filter
+        (setq plist (plist-put plist :filter stream-filter)))
+      (setq proc (apply #'make-process plist)))
     ;; R2600: 超时保护 — 启动一个计时器，超时后 kill 进程并回调 status=124。
     (when (and (natnump aiaos-cli-async-timeout) (> aiaos-cli-async-timeout 0))
       (setq timer
@@ -919,6 +976,13 @@ signaled with `user-error`."
         (setq aiaos-cli--skill-cache (make-hash-table :test 'equal)))
       (puthash name (aiaos-cli--parse-skill-yaml-scalar skill-yaml)
                aiaos-cli--skill-cache)
+      ;; R1320: 同步记录到 aiaos-cli--loaded-skills（skill-info/skill-list 依赖）。
+      (when (boundp 'aiaos-cli--loaded-skills)
+        (setq aiaos-cli--loaded-skills
+              (cons (list :name name :path (expand-file-name name aiaos-cli-skills-dir)
+                          :version "1.0.36" :enabled t)
+                    (cl-remove name aiaos-cli--loaded-skills
+                               :key (lambda (s) (plist-get s :name)) :test 'string=))))
       (message "aiaos-cli: loaded %d file(s) for skill %s"
                (length loaded) name)
       loaded)))
@@ -926,10 +990,34 @@ signaled with `user-error`."
 ;; R1100: alist->plist 桥接（JSON 解析产物 -> plist）。
 ;; 此前内嵌于 core/skill.sh 的 Python 生成脚本中，无法单元测试；现迁移至前端，
 ;; 生成脚本依赖 `-l aiaos-cli` 已加载本定义，不再重复 defun。
-(defun aiaos-cli--alist-to-plist (alist)
-  "Convert ALIST (the product of JSON object parsing) to a plist with keyword keys."
-  (mapcan (lambda (x) (list (intern (format ":%s" (car x))) (cdr x)))
-          alist))
+(defun aiaos-cli--alist-to-plist (data)
+  "Convert DATA to a plist with keyword keys.
+
+Handles both string-keyed alists (the product of JSON object parsing,
+e.g. ((\"key\" . val) ...)) and keyword plists (e.g. (:key val ...)).
+Also handles wrapped/nested alist shapes and mixed plist-with-alist-values."
+  (cond
+   ((null data) nil)
+   ;; Already a keyword plist.
+   ((and (consp data) (keywordp (car data))) data)
+   ;; Wrapped alist: ((((\"k\" . v) ...)) ...)
+   ((and (consp data) (consp (car data)) (listp (caar data))
+         (not (symbolp (caar data))))
+    (aiaos-cli--alist-to-plist (car data)))
+   ;; Mixed plist with alist values: (:key ((sub . val) ...) :k2 v2)
+   ((and (consp data) (consp (car data)) (listp (caar data)))
+    (mapcan (lambda (x)
+              (if (consp (car x))
+                  (list (intern (format ":%s" (car x)))
+                        (aiaos-cli--alist-to-plist (cdr x)))
+                (list (car x) (cdr x))))
+            data))
+   ;; Alist of (key . val) with string or symbol keys.
+   ((and (consp data) (consp (car data)))
+    (mapcan (lambda (x)
+              (list (intern (format ":%s" (car x))) (cdr x)))
+            data))
+   (t data)))
 
 (defun aiaos-cli-skill-run (name command args opts)
   "Run skill command COMMAND of skill NAME with ARGS/OPTS plists.
@@ -1053,6 +1141,107 @@ VERBOSE 为真时逐个 message 提示。已加载过的技能跳过（幂等）
    ((stringp result) (format "🔧 [%s] %s" (or name "tool") (string-trim result)))
    (t (format "🔧 [%s] %s" (or name "tool") (aiaos-cli--json-to-string result)))))
 
+(defun aiaos-cli--dialog-format-event (obj)
+  "Format a single dialog event OBJ (hash-table) for display.
+
+Returns a string to insert into the agent buffer, or nil to skip.
+Supports all provider event types: start / status / thinking / answer /
+tool_call / tool_result / error / done / interrupted / end / result.
+Used by both the batch `aiaos-cli--dialog-format' and the streaming
+agent-buffer path, so single-source formatting is shared."
+  (let ((type (gethash "type" obj))
+        (content (gethash "content" obj)))
+    (cond
+     ;; LLM 答案（流式时按 chunk 追加）
+     ((string= type "answer")
+      (when (and content (not (string-empty-p (string-trim content))))
+        (string-trim content)))
+     ;; 思考过程
+     ((string= type "thinking")
+      (when (and content (not (string-empty-p (string-trim content))))
+        (propertize (format "💭 %s" (string-trim content))
+                    'face 'font-lock-doc-face)))
+     ;; 状态/广播消息（provider切换、限流、自愈等）
+     ((string= type "status")
+      (let ((s (or content "")))
+        (when (and (not (string-empty-p (string-trim s)))
+                   (aiaos-cli--dialog-status-relevant-p s))
+          (propertize (format "ℹ️ %s" (string-trim s))
+                      'face 'font-lock-comment-face))))
+     ;; 工具调用
+     ((string= type "tool_call")
+      (propertize (format "🔧 调用工具 %s %s"
+                          (gethash "name" obj)
+                          (aiaos-cli--json-to-string (gethash "args" obj)))
+                  'face 'font-lock-function-name-face))
+     ;; 工具结果
+     ((string= type "tool_result")
+      (aiaos-cli--format-tool-result
+       (gethash "name" obj) (gethash "result" obj)))
+     ;; 轮次开始：显示轮次进度
+     ((string= type "round")
+      (propertize (format "▶ 第 %s 轮开始" (or (gethash "round" obj) "?"))
+                  'face 'font-lock-keyword-face))
+     ;; 每轮任务摘要：显示本轮工具调用与回复情况
+     ((string= type "round_summary")
+      (let ((rn (gethash "round" obj))
+            (tools (gethash "tools" obj))
+            (tc (gethash "tool-count" obj))
+            (replied (gethash "replied" obj)))
+        (propertize
+         (format "📋 第 %s 轮完成：%s%s"
+                 (or rn "?")
+                 (if (and tc (numberp tc) (> tc 0))
+                     (format "调用工具 %d 次%s" tc
+                             (if (and tools (not (string-empty-p tools)))
+                                 (format "（%s）" tools)
+                               ""))
+                   "未调用工具")
+                 (if replied "｜已生成回复" ""))
+         'face 'font-lock-doc-face)))
+     ;; 持续执行协议：续跑提示
+     ((string= type "continuation")
+      (propertize (format "🔄 继续执行任务（第 %s 轮）" (or (gethash "round" obj) "?"))
+                  'face 'font-lock-comment-face))
+     ;; 错误（含 provider 503/508/429）
+     ((string= type "error")
+      (propertize (format "⛔ %s" (or content "未知错误"))
+                  'face '(:foreground "red" :weight bold)))
+     ;; 完成
+     ((string= type "done")
+      (let ((complete (gethash "complete" obj))
+            (iters (gethash "iterations" obj))
+            (tools (gethash "tool_count" obj)))
+        (propertize (format "✅ 任务完成（%d 轮%s%s）"
+                            (or iters 0)
+                            (if complete "，已完整" "，可能未完成")
+                            (if tools (format "，%d 次工具调用" tools) ""))
+                    'face 'font-lock-keyword-face)))
+     ;; 中断
+     ((string= type "interrupted")
+      (propertize (format "⏹️ %s" (or content "已中断"))
+                  'face '(:foreground "orange" :weight bold)))
+     ;; 会话开始
+     ((string= type "start")
+      (let ((session (gethash "session" obj)))
+        (when session
+          (propertize (format "🔄 会话（恢复 %s / 共 %s）"
+                              (gethash "restored" session)
+                              (gethash "total" session))
+                      'face 'font-lock-doc-face))))
+      ;; bash agent.sh JSON 模式的 result 事件
+      ((string= type "result")
+       (let ((reply (gethash "reply" obj)))
+         (when (and reply (not (string-empty-p reply)))
+           (string-trim reply))))
+      ;; 任务简报（双重检测生成）
+      ((string= type "briefing")
+       (let ((content (gethash "content" obj)))
+         (when (and content (not (string-empty-p (string-trim content))))
+           (propertize (format "📋 任务简报\n%s" (string-trim content))
+                       'face 'font-lock-doc-face))))
+      (t nil))))
+
 (defun aiaos-cli--dialog-format (output)
   "Format streaming JSONL dialog OUTPUT for display.
 
@@ -1060,18 +1249,11 @@ VERBOSE 为真时逐个 message 提示。已加载过的技能跳过（幂等）
   start / status / thinking / answer / tool_call / tool_result /
   error / done / interrupted / end / 广播消息 / 连续消息 / SSE
 
-- answer: LLM 回答内容
-- status: 状态/广播（含 provider 切换、限流、自愈、恢复等）
-- thinking: 思考过程
-- tool_call / tool_result: 工具调用与结果
-- error: 错误（含 provider 503/508/429）
-- done: 完成（含 complete 状态与轮次）
-- interrupted: 中断
-- start / end: 会话边界
-
-同时解析 SSE 格式（data: {...}）与纯 JSONL。"
-  (let ((lines (split-string output "\n" t))
-        (parts nil))
+同时解析 SSE 格式（data: {...}）与纯 JSONL。answer 事件按连续 chunk
+拼接（不插入换行），其余事件各占一行。"
+  (let ((lines (split-string output "\n"))
+        (parts nil)
+        (last-was-answer nil))
     (dolist (line lines)
       (let ((line (string-trim line)))
         ;; 支持 SSE: 去掉 "data: " 前缀
@@ -1080,64 +1262,73 @@ VERBOSE 为真时逐个 message 提示。已加载过的技能跳过（幂等）
         (when (and (> (length line) 0) (string= (substring line 0 1) "{"))
           (let ((obj (aiaos-cli--parse-json line)))
             (when obj
-              (let ((type (gethash "type" obj))
-                    (content (gethash "content" obj)))
-                (cond
-                 ;; LLM 答案
-                 ((string= type "answer")
-                  (when (and content (not (string-empty-p (string-trim content))))
-                    (push (string-trim content) parts)))
-                 ;; 思考过程
-                 ((string= type "thinking")
-                  (when (and content (not (string-empty-p (string-trim content))))
-                    (push (propertize (format "💭 %s" (string-trim content))
-                                      'face 'font-lock-doc-face) parts)))
-                 ;; 状态/广播消息（provider切换、限流、自愈等）
-                 ((string= type "status")
-                  (let ((s (or content "")))
-                    (when (and (not (string-empty-p (string-trim s)))
-                               (aiaos-cli--dialog-status-relevant-p s))
-                      (push (propertize (format "ℹ️ %s" (string-trim s))
-                                        'face 'font-lock-comment-face) parts))))
-                 ;; 工具调用
-                 ((string= type "tool_call")
-                  (push (propertize (format "🔧 调用工具 %s %s"
-                                            (gethash "name" obj)
-                                            (aiaos-cli--json-to-string (gethash "args" obj)))
-                                    'face 'font-lock-function-name-face) parts))
-                 ;; 工具结果
-                 ((string= type "tool_result")
-                  (push (aiaos-cli--format-tool-result
-                         (gethash "name" obj) (gethash "result" obj)) parts))
-                 ;; 错误（含 provider 503/508/429）
-                 ((string= type "error")
-                  (push (propertize (format "⛔ %s" (or content "未知错误"))
-                                    'face '(:foreground "red" :weight bold)) parts))
-                 ;; 完成
-                 ((string= type "done")
-                  (let ((complete (gethash "complete" obj))
-                        (iters (gethash "iterations" obj))
-                        (tools (gethash "tool_count" obj)))
-                    (push (propertize (format "✅ 任务完成（%d 轮%s%s）"
-                                              (or iters 0)
-                                              (if complete "，已完整" "，可能未完成")
-                                              (if tools (format "，%d 次工具调用" tools) ""))
-                                      'face 'font-lock-keyword-face) parts)))
-                 ;; 中断
-                 ((string= type "interrupted")
-                  (push (propertize (format "⏹️ %s" (or content "已中断"))
-                                    'face '(:foreground "orange" :weight bold)) parts))
-                 ;; 会话开始
-                 ((string= type "start")
-                  (let ((session (gethash "session" obj)))
-                    (when session
-                      (push (propertize (format "🔄 会话（恢复 %s / 共 %s）"
-                                                (gethash "restored" session)
-                                                (gethash "total" session))
-                                        'face 'font-lock-doc-face) parts)))))))))))
+              (let ((formatted (aiaos-cli--dialog-format-event obj)))
+                (when formatted
+                  (let ((is-answer (string= (gethash "type" obj) "answer")))
+                    (if (and is-answer last-was-answer)
+                        ;; 连续 answer chunk 直接拼接
+                        (setq parts (cons (concat (car parts) formatted) (cdr parts)))
+                      (push formatted parts))
+                    (setq last-was-answer is-answer)))))))))
     (if parts
         (string-join (nreverse parts) "\n")
       (string-trim output))))
+
+;;; === 任务完成度双重检测机制 ===
+;; 在连续交互结束、即将回到提示符时：
+;;   1) 先根据记录检测任务是否完成；
+;;   2) 若记录显示可能完成，则让 LLM 生成任务简报（必须含「任务摘要」项）；
+;;   3) 再检测简报的「任务摘要」项，判断任务是否真正完成；
+;;   4) 若未完成，不回到提示符，自动继续执行任务。
+(defvar aiaos-cli--task-continue-count 0
+  "当前任务自动续行次数（防止无限循环）。")
+(defvar aiaos-cli--task-continue-max 9999
+  "任务自动续行的最大次数，超过后强制回到提示符。")
+(defvar aiaos-cli--last-agent-reply nil
+  "最近一次 agent 回复内容（用于任务完成度记录检测）。")
+(defvar aiaos-cli--task-check-briefing nil
+  "最近一次双重检测生成的任务简报文本（含任务摘要）。")
+
+(defun aiaos-cli--task-record-text ()
+  "Build a text summary of the agent conversation records for task detection."
+  (aiaos-cli--task-record-text-from aiaos-cli--agent-history))
+
+(defun aiaos-cli--task-briefing-prompt (records)
+  "Build the briefing-generation prompt from RECORDS.
+The briefing MUST contain a 「任务摘要」item."
+  (format
+   "你是一个任务完成度评估助手。请根据以下对话记录，生成一份任务简报。\n\
+简报必须且仅包含一个「任务摘要」项，并明确评估任务是否已经完成。\n\
+请严格以 JSON 格式输出（不要任何多余文字或代码块标记）：\n\
+{\"task_summary\": \"<任务摘要内容>\", \"complete\": <true|false>, \"briefing\": \"<完整简报内容>\"}\n\n\
+对话记录：\n%s"
+   records))
+
+(defun aiaos-cli--task-complete-from-briefing (briefing-text)
+  "Check 2: 检测任务简报的「任务摘要」项，判断任务是否完成.
+
+BRIEFING-TEXT is the LLM briefing output (JSON with task_summary/complete, or
+plain text).  Returns t if the summary indicates the task is complete, nil
+otherwise."
+  (let* ((cleaned (string-trim (or briefing-text "")))
+         (obj (condition-case nil (aiaos-cli--parse-json cleaned) (error nil)))
+         (complete (and obj (gethash "complete" obj)))
+         (summary (or (and obj (gethash "task_summary" obj))
+                      cleaned)))
+    (cond
+     ;; JSON 显式 complete 字段
+     ((eq complete t) t)
+     ((eq complete :json-false) nil)
+     ;; 从「任务摘要」项文本分析
+     ((and summary (string-match-p
+                    "任务完成\\|已完成\\|全部完成\\|✅\\|completed\\|finished\\|task done\\|已解决\\|已实现"
+                    (format "%s" summary)))
+      t)
+     (t nil))))
+
+(defun aiaos-cli--task-continuation-message ()
+  "Build the continuation message to keep executing an unfinished task."
+  "任务尚未完成，请根据以上对话记录继续执行剩余任务。若任务确已完成，请在回复中明确说明「任务已完成」。")
 
 (defvar aiaos-cli--retry-count 0
   "R2903: 当前重试次数（自愈机制）。")
@@ -1148,23 +1339,288 @@ VERBOSE 为真时逐个 message 提示。已加载过的技能跳过（幂等）
 
 (defun aiaos-cli--dialog-transient-error-p (out err status)
   "Return non-nil if the dialog response indicates a transient provider error.
-检测 429 (rate limit), 502/503/504/508 (service unavailable) 等可自愈错误。"
+R2903: 检测 402/429/5xx 等可自愈错误；但若 bridge 明确返回 permanent=true
+（所有 provider 已耗尽），则视为永久错误不再重试。"
+  ;; 检查 bridge 是否明确标记为永久失败
+  (when (and (stringp out) (> (length (string-trim out)) 0))
+    (let ((trimmed (string-trim out)))
+      (when (or (string-match-p "fallback_exhausted" trimmed)
+                (string-match-p "permanent.*true\\|\"permanent\":\\s-*true" trimmed))
+        (aiaos-llm-log "info" "Bridge reports permanent failure, not retrying")
+        (cl-return-from aiaos-cli--dialog-transient-error-p nil))))
+  ;; 任何非零退出状态 + 错误输出均视为可自愈（bridge 内部已完成 fallback）
   (or (and (numberp status) (> status 0))
-      (and (stringp out) (string-match-p "429\\|503\\|504\\|508\\|rate.?limit\\|too many requests\\|Service Unavailable\\|quota\\|insufficient" out))
-      (and (stringp err) (string-match-p "429\\|503\\|504\\|508\\|rate.?limit\\|too many requests\\|Service Unavailable\\|quota\\|insufficient" err))))
+      (and (stringp err) (> (length (string-trim err)) 0))
+      (and (stringp out) (> (length (string-trim out)) 0)
+           (string-match-p "error\\|Error\\|fail\\|timeout\\| refused\\|402\\|429\\|50[0-9]\\|insufficient" out))))
+
+(defvar aiaos-cli--last-agent-message nil
+  "R2903: 最近一次发送的消息。自愈重试时复用（提示行已被删除）。")
+
+(defun aiaos-cli--record-to-llm-message (r)
+  "Convert conversation RECORD (:role . :message) plist to an LLM message alist."
+  (let ((role (or (plist-get r :role) "user"))
+        (msg (or (plist-get r :message) "")))
+    (cond ((equal role "assistant") (aiaos-llm-message-assistant msg))
+          ((equal role "system") (aiaos-llm-message-system msg))
+          ((equal role "tool") (aiaos-llm-message-user msg))
+          (t (aiaos-llm-message-user msg)))))
+
+(defun aiaos-cli--records-to-messages (records)
+  "Convert RECORDS (conversation history plists) to LLM message alists."
+  (mapcar #'aiaos-cli--record-to-llm-message (or records nil)))
+
+(defun aiaos-cli--agent-dialog-pure (message &optional stream-cb done-cb records)
+  "Pure elisp agent dialog using MESSAGE.
+
+RECORDS, when non-nil, is the conversation history (list of (:role . :message)
+plists) from previous turns.  It is prepended as context so the agent's task
+chain keeps remembering prior work instead of forgetting the chain records.
+
+Replaces the external `aiaos agent dialog' binary.  Uses the full-capability
+pure-elisp LLM engine (`aiaos-llm-chat-stream' -> `aiaos-llm-full-chat'), which
+sends tool schemas to the model, executes tool calls in a loop, and streams SSE
+deltas in real time.  Emits answer/tool_call/tool_result/status/error events
+through STREAM-CB in the same JSONL format the existing renderer expects, then
+calls DONE-CB with (status out err).
+
+STREAM-CB and DONE-CB may be nil (batch mode)."
+  (let ((status 0) (out "") (err ""))
+    (condition-case caught
+        (progn
+          (when stream-cb
+            (funcall stream-cb (concat (json-encode (list (cons "type" "status")
+                                                            (cons "content" "正在请求 LLM...")))
+                                        "\n")))
+          ;; 全能力引擎：真实 SSE 流式 + 工具调用循环
+          ;; R-CONTEXT-MEMORY: 将对话历史（records）前置为上下文消息，
+          ;; 让 agent 的任务链路在多次 aiaos-cli-agent-send 之间记住记录。
+          ;; R-ELISP-CAPABILITY: 在消息列表最前面插入 system message，
+          ;; 告知 LLM 当前运行在 Emacs 环境中，可使用 elisp-exec 工具。
+          (let* ((history-msgs (aiaos-cli--records-to-messages records))
+                 (system-msg (aiaos-llm-message-system aiaos-cli-elisp-system-prompt))
+                 (all-msgs (append (list system-msg)
+                                   history-msgs
+                                   (list (aiaos-llm-message-user message))))
+                 (reply
+                  (aiaos-llm-full-chat
+                   all-msgs
+                   (aiaos-llm-build-tools-schema)
+                   10
+                   ;; 流式事件回调：转发 answer delta 给渲染器
+                   (when stream-cb
+                      (lambda (obj)
+                        (let ((type (cdr (assq 'type obj))))
+                          (cond
+                           ((equal type "tool_call")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "tool_call")
+                                                              (cons "name" (cdr (assq 'name obj)))
+                                                              (cons "args" (cdr (assq 'args obj)))))
+                                                       "\n")))
+                           ((equal type "tool_result")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "tool_result")
+                                                              (cons "name" (cdr (assq 'name obj)))
+                                                              (cons "result" (cdr (assq 'result obj)))))
+                                                       "\n")))
+                           ;; 轮次开始：转发轮号（agent buffer 显示轮次进度）
+                           ((equal type "round")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "round")
+                                                              (cons "round" (cdr (assq 'round obj)))))
+                                                       "\n")))
+                           ;; 每轮任务摘要：转发轮次小结（工具调用情况）
+                           ((equal type "round_summary")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "round_summary")
+                                                              (cons "round" (cdr (assq 'round obj)))
+                                                              (cons "tools" (cdr (assq 'tools obj)))
+                                                              (cons "tool-count" (cdr (assq 'tool-count obj)))
+                                                              (cons "replied" (cdr (assq 'replied obj)))))
+                                                       "\n")))
+                           ;; 持续执行协议：转发续跑事件
+                           ((equal type "continuation")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "continuation")
+                                                              (cons "round" (cdr (assq 'round obj)))))
+                                                       "\n")))
+                           ;; ;;elisp-exec 持续执行协议：转发程序执行事件
+                           ((equal type "elisp_exec")
+                            (funcall stream-cb (concat (json-encode
+                                                        (list (cons "type" "elisp_exec")
+                                                              (cons "code" (cdr (assq 'code obj)))
+                                                              (cons "result" (cdr (assq 'result obj)))
+                                                              (cons "round" (cdr (assq 'round obj)))))
+"\n"))))))) t)))
+            (setq out (format "%s" reply))
+            ;; 若流式事件已渲染了部分内容，此处只发送剩余增量；
+            ;; 简化：直接把完整 reply 作为 answer 事件发送（渲染器按内容去重）。
+            (when (and stream-cb (> (length out) 0))
+              (funcall stream-cb (concat (json-encode (list (cons "type" "answer")
+                                                             (cons "content" out)))
+                                          "\n"))))
+          (when done-cb (funcall done-cb status out err)))
+      (error
+       (setq status 1)
+       (setq err (error-message-string caught))
+       (when stream-cb
+         (funcall stream-cb (concat (json-encode (list (cons "type" "error")
+                                                         (cons "content" err)))
+                                    "\n")))
+        (when done-cb (funcall done-cb status out err))))))
+
+;;; === 脚本模式：aiaos-cli agent <message> ===
+
+(defun aiaos-cli-agent-run (message)
+  "Run the full agent dialog for MESSAGE in batch/script mode.
+All LLM provider capabilities are available: provider fallback chain,
+tool calling loop, continuous task execution, and dual-check task
+completion. Returns a plist (:data . string) on success, or
+(:status \"error\" :error-message . string) on failure."
+  (aiaos-ensure-llm-providers)
+  (let* ((history-msgs (aiaos-cli--records-to-messages aiaos-cli--agent-history))
+         (system-msg (aiaos-llm-message-system aiaos-cli-elisp-system-prompt))
+         (all-msgs (append (list system-msg)
+                           history-msgs
+                           (list (aiaos-llm-message-user message))))
+         (reply (condition-case err
+                  (aiaos-llm-full-chat all-msgs
+                                       (aiaos-llm-build-tools-schema)
+                                       nil nil nil)
+                  (error (format "%s" err)))))
+    (if (or (null reply) (string-empty-p (string-trim reply)))
+        (list :status "error"
+              :error-code "EMPTY_REPLY"
+              :error-message (or reply "LLM returned empty response"))
+      (list :data reply
+            :status "success"
+            :iterations (or (cdr (assoc "iterations" aiaos-llm--last-run-stats)) 0)
+            :tool-count (or (cdr (assoc "tool_count" aiaos-llm--last-run-stats)) 0)
+            :continuations (or (cdr (assoc "continuations" aiaos-llm--last-run-stats)) 0)))))
+
+(defun aiaos-cli--agent-dialog-batch-file (file)
+  "Batch entrypoint reading message+records from FILE (elisp `prin1' pair).
+File contains `(message records)' written by the parent.  Avoiding passing the
+conversation history through the command line: the `--eval' argv would exceed
+ARG_MAX (E2BIG \"参数列表过长\") once a session grows long, which is exactly the
+\"Error running timer\" seen in `run-at-time' auto-continuation callbacks."
+  (let* ((data (with-temp-buffer
+                 (insert-file-contents file)
+                 (goto-char (point-min))
+                 (read (buffer-string))))
+         (msg (car data))
+         (records (cadr data)))
+    (ignore-errors (delete-file file))
+    (aiaos-cli--agent-dialog-batch msg records)))
+
+(defun aiaos-cli--agent-dialog-batch (message &optional records)
+  "Batch entrypoint: run pure agent dialog for MESSAGE, print JSONL to stdout.
+
+Used as the target of a background `emacs --batch' subprocess so the main
+Emacs stays responsive while the LLM streams.  Each event (status/answer/error)
+is printed as a single JSON line.  Prints a final done event with the full
+reply so the parent can render the fallback batch text if needed.
+
+When RECORDS (conversation history alist) is provided, runs the dual-check task
+completion detection after the dialog and emits a `task_check' event:
+  CHECK 1 from RECORDS -> if likely complete, generate a task briefing (must
+  contain a 「任务摘要」item) -> CHECK 2 from the summary item.  Emits
+  {\"type\":\"task_check\",\"complete\":bool,\"briefing\":...} so the parent can
+  decide whether to return to the prompt or continue the task."
+  (require 'aiaos-cli-llm)
+  (require 'aiaos-cli-version)
+  (let ((buf (generate-new-buffer " *aiaos-batch-out*")))
+    (unwind-protect
+        (progn
+          (set-buffer-multibyte nil)
+          ;; 让 stdout 每行刷新（batch 管道默认块缓冲，filter 需及时收到）
+          (let ((events '()))
+            (aiaos-cli--agent-dialog-pure
+             message
+             (lambda (chunk)
+               (princ chunk)
+               (setq events (cons chunk events)))
+(lambda (status out err)
+                    ;; 双重检测：根据记录判断任务是否完成，再经任务简报的「任务摘要」项确认
+                    (let* ((rec-text (concat (aiaos-cli--task-record-text-from records)
+                                             "\n"
+                                             (and out (format "[assistant] %s" out))))
+                           (complete-from-records
+                            (aiaos-cli--task-complete-from-records-from rec-text nil))
+                           (briefing
+                            (and complete-from-records
+                                 (condition-case e
+                                     (let* ((sys-msg (aiaos-llm-message-system aiaos-cli-elisp-system-prompt))
+                                            (base-msgs (append (aiaos-cli--records-to-messages records)
+                                                               (list (aiaos-llm-message-assistant (or out "")))
+                                                               (list (aiaos-llm-message-user
+                                                                      (aiaos-cli--task-briefing-prompt rec-text)))))
+                                           (all-msgs (cons sys-msg base-msgs)))
+                                       (aiaos-llm-full-chat (append all-msgs nil)
+                                                            (aiaos-llm-build-tools-schema) 1))
+                                   (error (format "ERROR: %s" e)))))
+                           (complete
+                            (and records (= status 0)
+                                 complete-from-records
+                                 (aiaos-cli--task-complete-from-briefing briefing))))
+                     (when (and records (= status 0))
+                       (princ (json-encode (list (cons "type" "task_check")
+                                                 (cons "complete" (if complete t :json-false))
+                                                 (cons "briefing" (or briefing "")))))
+                       (princ "\n"))
+                    (princ (json-encode (list (cons "type" "done")
+                                              (cons "status" status)
+                                              (cons "out" out)
+                                              (cons "err" err)
+                                              (cons "complete" (if complete t :json-false))
+                                              (cons "iterations" (or (cdr (assoc "iterations" aiaos-llm--last-run-stats)) 0))
+                                              (cons "tool_count" (or (cdr (assoc "tool_count" aiaos-llm--last-run-stats)) 0)))))
+                     (princ "\n")
+(setq events (cons (list status out err) events))))
+              records)
+            (kill-buffer buf)))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(defun aiaos-cli--task-record-text-from (records)
+  "Build record text from RECORDS (list of (:role . :message) plists)."
+  (mapconcat
+   (lambda (m)
+     (format "[%s] %s" (or (plist-get m :role) "?") (or (plist-get m :message) "")))
+   records "\n"))
+
+(defun aiaos-cli--task-complete-from-records-from (records last-answer)
+  "CHECK 1 (batch): detect task completion from RECORDS text and LAST-ANSWER."
+  (let ((records (concat (or records "") "\n" (or last-answer ""))))
+    (cond
+     ((string-match-p "请提供\\|请确认\\|请补充\\|请说明\\|请告诉\\|请给出\\|需要更多信息\\|请问您\\|请先提供\\|请明确"
+                      records)
+      nil)
+     ((string-match-p "任务完成\\|已完成\\|全部完成\\|✅\\|任务简报\\|任务摘要\\|briefing\\|summary\\|completed\\|finished\\|task done"
+                      records)
+      t)
+     (t t))))
 
 (defun aiaos-cli-agent-send (&optional retry)
   "Send the current line's text as a message to the aiaos agent.
 
 Reads the text after the \"> \" prompt at point, sends it via the
 CLI backend, and appends the response back into this buffer.
-RETRY 为真时表示这是自愈重试调用（不重复读取提示行）。"
+RETRY 为真时表示这是自愈重试调用（不重复读取提示行）。
+R2903: 流式输出 —— stdout 每到达一块即增量渲染到 buffer，
+无需等待进程结束，LLM answer 逐 token 显示。"
   (interactive)
   (save-excursion
     (let ((msg nil)
-          cmd)
+          (stream-pending "")
+          (stream-started nil)
+          (last-was-answer nil)
+          (content-inserted nil)
+          (task-check-complete t))
       ;; Determine the message: the current line, or the last "> " prompt.
-      (unless retry
+      (if retry
+          ;; R2903 修复: 重试时不重新读提示行（已被删除），复用上次消息。
+          (setq msg aiaos-cli--last-agent-message)
         (let ((line-start (line-beginning-position)))
           (goto-char line-start)
           ;; If the current line starts with "> ", use its content.
@@ -1177,6 +1633,7 @@ RETRY 为真时表示这是自愈重试调用（不重复读取提示行）。"
       ;; 若 msg 为 nil 会继续执行并导致 "Wrong type argument: stringp, nil"。
       (if (not (and msg (not (string-empty-p msg))))
           (message "aiaos-cli: 没有可发送的消息（请在 \"> \" 提示后输入内容）")
+        (setq aiaos-cli--last-agent-message msg)
         ;; Find the prompt line to delete/replace
         (goto-char (point-max))
         (let ((inhibit-read-only t))
@@ -1184,58 +1641,173 @@ RETRY 为真时表示这是自愈重试调用（不重复读取提示行）。"
             (delete-region (match-beginning 0) (point-max))
             (goto-char (point-max))))
         (insert "\n")
-        (setq cmd (append (list (aiaos-cli--assert-binary) "--agent" "--dialog")
-                               (list msg)))
         (push (list :role "user" :message msg) aiaos-cli--agent-history)
         (unless retry
+          (setq aiaos-cli--task-continue-count 0)
           (insert (propertize (format ">>> %s\n" msg) 'face 'font-lock-keyword-face)))
         (insert (propertize "...waiting for response...\n" 'face 'font-lock-comment-face))
-        (aiaos-cli--call-async cmd
-          (lambda (status out err)
-            ;; R-FIX-READONLY: 回调在进程 sentinel 上下文中执行，
-            ;; current-buffer 不确定。显式切回聊天 buffer 并用
-            ;; inhibit-read-only 保护写入，确保 LLM 响应可靠回显。
-            (let ((chat-buf (get-buffer aiaos-cli-chat-buffer-name)))
-              (when (buffer-live-p chat-buf)
-                (with-current-buffer chat-buf
-                  (let ((inhibit-read-only t))
-                    (save-excursion
-                      (goto-char (point-max))
-                      (when (search-backward "...waiting for response..." nil t)
-                        (delete-region (match-beginning 0) (match-end 0)))
-                      ;; R2903 自愈机制: 检测到 transient 错误且未达重试上限时，
-                      ;; 自动重试（provider fallback/切换由 binary 内部完成）。
-                      (if (and (not (= status 0))
-                               (aiaos-cli--dialog-transient-error-p out err status)
-                               (< aiaos-cli--retry-count aiaos-cli--retry-max))
-                          (progn
-                            (setq aiaos-cli--retry-count (1+ aiaos-cli--retry-count))
-                            (insert (propertize (format "⏳ 检测到 provider 错误（%s），自愈重试 %d/%d..."
-                                                        (or (string-trim err) "timeout")
-                                                        aiaos-cli--retry-count aiaos-cli--retry-max)
-                                                'face 'font-lock-comment-face))
-                            (insert "\n")
-                            (run-at-time aiaos-cli--retry-delay nil
-                              (lambda ()
-                                (when (buffer-live-p chat-buf)
-                                  (with-current-buffer chat-buf
-                                    (aiaos-cli-agent-send t))))))
-                        (if (= status 0)
-                            (progn
-                              (insert (propertize (format "<<< %s\n"
-                                                          (aiaos-cli--dialog-format out))
-                                                  'face 'font-lock-string-face))
-                              (setq aiaos-cli--retry-count 0))
-                          (progn
-                            (setq aiaos-cli--retry-count 0)
-                            (insert (propertize (format "<<< [error] %s\n"
-                                                        (or (string-trim err) "unknown error"))
-                                                'face '(:foreground "red" :weight bold))))))
-                      (insert "> "))
-                    (condition-case _
-                        (recenter -1)
-                      (error nil))))))
-        ))))))
+        (let ((chat-buf (get-buffer-create aiaos-cli-chat-buffer-name)))
+          ;; R-CLOSURE-FIX: 用 let 绑定 lambda + funcall（而非 cl-labels）保证
+          ;; 逃逸闭包（完成回调）能正确词法捕获 emit-line/flush-pending。
+          (let ((emit-line
+                 (lambda (line)
+                  (let ((line (string-trim line)))
+                    ;; 支持 SSE: 去掉 "data: " 前缀
+                    (when (string-match-p "^data:" line)
+                      (setq line (string-trim (substring line 5))))
+                    (when (and (> (length line) 0)
+                               (string= (substring line 0 1) "{"))
+                      (let ((obj (aiaos-cli--parse-json line)))
+                        (when obj
+                          ;; task_check 事件：记录双重检测结果与任务简报（不渲染）
+                           (when (string= (gethash "type" obj) "task_check")
+                             (setq task-check-complete (eq (gethash "complete" obj) t))
+                             (setq aiaos-cli--task-check-briefing
+                                   (or (gethash "briefing" obj) "")))
+                          (let ((formatted (aiaos-cli--dialog-format-event obj)))
+                            (when formatted
+                              (let ((is-answer (string= (gethash "type" obj) "answer")))
+                                (with-current-buffer chat-buf
+                                  (let ((inhibit-read-only t))
+                                    (goto-char (point-max))
+                                    ;; 首个事件: 移除 "...waiting..." 占位符
+                                    (unless stream-started
+                                      (when (search-backward "...waiting for response..." nil t)
+                                        (delete-region (match-beginning 0) (match-end 0)))
+                                      (setq stream-started t))
+                                    ;; answer 续行直接拼接（不插换行），其余事件分隔一行
+                                    (unless (and is-answer last-was-answer)
+                                      (insert "\n"))
+                                    (insert formatted)))
+                                (setq last-was-answer is-answer)
+                                (setq content-inserted t)))))))))))
+            (let ((flush-pending
+                   (lambda ()
+                     (when (and (not (string-empty-p stream-pending))
+                                (not (string-empty-p (string-trim stream-pending))))
+                       (funcall emit-line stream-pending)
+                       (setq stream-pending "")))))
+              ;; 流式回调: 每块 stdout 增量解析 JSONL 并渲染
+              (let ((stream-cb
+                     (lambda (chunk)
+                       (setq stream-pending (concat stream-pending chunk))
+                       (let ((pos 0))
+                         (while (string-match "\n" stream-pending pos)
+                           ;; R-MATCHDATA-FIX: emit-line 内部会调用 string-match
+                           ;; （string-trim/parse-json/format-event），覆盖全局 match-data，
+                           ;; 因此必须在调用前捕获 match-end，否则 pos 会倒退导致死循环。
+                           (let ((next (match-end 0)))
+                             (funcall emit-line (substring stream-pending pos (match-beginning 0)))
+                             (setq pos next)))
+                         (setq stream-pending (substring stream-pending pos))))))
+                 ;; R-SYNC-FIX: 改用后台 emacs --batch 子进程运行 LLM 对话，
+                 ;; 避免同步 LLM 调用阻塞主 Emacs（旋转动画卡死）。
+                 ;; R-ARGMAX-FIX: 对话历史通过临时文件传给子进程（而非 --eval），
+                 ;; 避免长会话时 argv 超 ARG_MAX 报 "参数列表过长" (E2BIG)。
+                 (let* ((proj-dir (or (and (symbol-file 'aiaos-cli--agent-dialog-pure)
+                                           (file-name-directory (symbol-file 'aiaos-cli--agent-dialog-pure)))
+                                      (file-name-directory (or load-file-name ""))
+                                      "~/.emacs.d/aiaos-cli/"))
+                        (input-file (make-temp-file "aiaos-agent-input-" nil ".el")))
+                   (with-temp-file input-file
+                     (prin1 (list msg aiaos-cli--agent-history) (current-buffer)))
+                   (let ((cmd (list (expand-file-name invocation-name invocation-directory)
+                                    "--batch"
+                                    "-L" (expand-file-name proj-dir)
+                                    "-l" (expand-file-name "aiaos-cli.el" proj-dir)
+                                    "--eval" (format "(aiaos-cli--agent-dialog-batch-file %S)"
+                                                     input-file))))
+                     (aiaos-cli--call-async cmd
+                    (lambda (status out err)
+                     ;; 完成回调: 冲刷剩余行，然后处理成功/重试/失败。
+                     ;; R-FIX-READONLY: 回调在进程 sentinel 上下文中执行，
+                     ;; current-buffer 不确定。显式切回聊天 buffer 并用
+                     ;; inhibit-read-only 保护写入。
+                     (let ((chat-buf (get-buffer aiaos-cli-chat-buffer-name)))
+                       (when (buffer-live-p chat-buf)
+                          (with-current-buffer chat-buf
+                            (let ((inhibit-read-only t))
+                              (progn
+                               (goto-char (point-max))
+                               (funcall flush-pending)
+                              (when (search-backward "...waiting for response..." nil t)
+                                (delete-region (match-beginning 0) (match-end 0)))
+                              ;; R2903 自愈机制: 检测到 transient 错误且未达重试上限时，
+                              ;; 自动重试（provider fallback/切换由 binary 内部完成）。
+                              (if (and (not (= status 0))
+                                      (aiaos-cli--dialog-transient-error-p out err status)
+                                      (< aiaos-cli--retry-count aiaos-cli--retry-max))
+                                 (progn
+                                   (setq aiaos-cli--retry-count (1+ aiaos-cli--retry-count))
+                                   (insert (propertize (format "⏳ 检测到 provider 错误（%s），自愈重试 %d/%d..."
+                                                               (or (string-trim err) "timeout")
+                                                               aiaos-cli--retry-count aiaos-cli--retry-max)
+                                                       'face 'font-lock-comment-face))
+                                   (insert "\n")
+                                   (run-at-time aiaos-cli--retry-delay nil
+                                     (lambda ()
+                                       (when (buffer-live-p chat-buf)
+                                         (with-current-buffer chat-buf
+                                           (aiaos-cli-agent-send t))))))
+                                (if (= status 0)
+                                    (progn
+                                      (unless content-inserted
+                                        ;; 无流式内容（如进程瞬时退出），用批量格式化兜底
+                                        (insert (propertize (format "<<< %s\n"
+                                                                    (aiaos-cli--dialog-format out))
+                                                            'face 'font-lock-string-face)))
+                                      ;; 记录 assistant 回复，供后续任务完成度检测
+                                      (when (and out (not (string-empty-p (string-trim out))))
+                                        (push (list :role "assistant" :message (string-trim out))
+                                              aiaos-cli--agent-history))
+                                      (setq aiaos-cli--retry-count 0)
+                                      (setq aiaos-cli--last-agent-reply out))
+                                  (progn
+                                    (setq aiaos-cli--retry-count 0)
+                                    (insert (propertize (format "<<< [error] %s\n"
+                                                                (or (string-trim err) "unknown error"))
+                                                        'face '(:foreground "red" :weight bold))))))
+                               ;; 双重任务完成检测：任务完成后才回到提示符，否则自动续行
+                                (if (and (= status 0)
+                                         (not task-check-complete)
+                                         (< aiaos-cli--task-continue-count aiaos-cli--task-continue-max))
+                                    (progn
+                                      (setq aiaos-cli--task-continue-count
+                                            (1+ aiaos-cli--task-continue-count))
+                                      (insert (propertize
+                                               (format "⏳ 任务未完成，自动继续执行（%d/%d）…\n"
+                                                       aiaos-cli--task-continue-count
+                                                       aiaos-cli--task-continue-max)
+                                               'face 'font-lock-comment-face))
+                                      (run-at-time 0.5 nil
+                                        (lambda ()
+                                          (when (buffer-live-p chat-buf)
+                                            (with-current-buffer chat-buf
+                                              (let ((aiaos-cli--last-agent-message
+                                                     (aiaos-cli--task-continuation-message)))
+                                                (aiaos-cli-agent-send t)))))))
+                                    (setq aiaos-cli--task-continue-count 0)
+                                    ;; 展示任务简报（含任务摘要）
+                                    (when (and aiaos-cli--task-check-briefing
+                                               (not (string-empty-p (string-trim aiaos-cli--task-check-briefing))))
+                                      (insert (propertize
+                                               (format "📋 任务简报\n%s\n"
+                                                       (string-trim aiaos-cli--task-check-briefing))
+                                               'face 'font-lock-doc-face))
+                                      (insert "\n"))
+                                    ;; R-PROMPT-LINE: 任务完成后回到提示符时，另起一行
+                                    ;; 并把光标置于提示符后，准备好接收新消息。
+                                    (goto-char (point-max))
+                                    (unless (and (> (point) (point-min))
+                                                 (eq (char-before) ?\n))
+                                      (insert "\n"))
+                                    (insert "> "))
+                              (condition-case _
+                                  (recenter -1)
+                                 (error nil))))))
+                      stream-cb)))))))))))))
+
+
 
 (defvar aiaos-cli--log-tail-timer nil "Timer for log tail updates.")
 

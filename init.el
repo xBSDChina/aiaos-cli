@@ -8,5 +8,7 @@
 (require 'aiaos-cli-app)
 (require 'aiaos-cli-emacs)
 
-;; Provide the package
-(provide 'aiaos-cli)
+;; Note: Do NOT provide 'aiaos-cli here, because the actual implementation
+;; is in lisp/aiaos-cli.el. Providing it here would cause require 'aiaos-cli
+;; to skip loading aiaos-cli.el, leading to missing functions like
+;; aiaos-cli--parse-json.

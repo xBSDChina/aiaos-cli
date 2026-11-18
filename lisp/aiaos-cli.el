@@ -1975,10 +1975,13 @@ $ 只锚定末尾，expected-version 是裸 1.0.0。原实现碰巧能匹配，�
 ;; ============================================================
 
 ;;;###autoload
-(defun aiaos-cli-config-get (key)
-  "Get aiaos config KEY value."
+(defun aiaos-cli-config-get (key &optional default)
+  "Get aiaos config KEY value, return DEFAULT if not found."
   (interactive "sConfig key: ")
-  (aiaos-cli-run "config" "get" (format "--key=%s" key)))
+  (let ((result (aiaos-cli-run "config" "get" (format "--key=%s" key))))
+    (if (or (null result) (string= result "") (string-match "not found" result))
+        default
+      result)))
 
 ;;;###autoload
 (defun aiaos-cli-config-set (key value)
