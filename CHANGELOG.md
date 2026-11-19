@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- design.md: 修正钩子签名文档-实现不一致（§2531/§2532/§2660/§2661 行 `(cmd args opts)` → `(command args)`，`(cmd args opts result)` → `(command result)`，与 core/skill.sh 生成模板及全部 8 技能实现一致）
+- scripts/compile-gate.sh: 移除过时的 `aiaos-cli-app:aiaos-cli-components` 依赖声明（app.el 于 d4bd610 重构后不再 require aiaos-cli-components，改用 aiaos-cli--component-*）
+
 ### Added
 - skill deps --graph dot: 支持 DOT 格式输出技能依赖图（P2 实现，设计文档 §64 R2104）
 - tests: 新增 skill deps --graph dot 3 项测试（合法 DOT 输出 / --name 过滤 / graphviz 语法校验）

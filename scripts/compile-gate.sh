@@ -110,7 +110,6 @@ DEPENDENCIES=(
     "aiaos-cli-app:aiaos-cli-lifecycle"
     "aiaos-cli-app:aiaos-cli-theme"
     "aiaos-cli-app:aiaos-cli-router"
-    "aiaos-cli-app:aiaos-cli-components"
 )
 
 for dep in "${DEPENDENCIES[@]}"; do
