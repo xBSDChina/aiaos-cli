@@ -7,10 +7,12 @@
 (require 'aiaos-cli-core)
 (require 'cl-lib)
 (require 'aiaos-cli-emacs-adapter)
+(require 'aiaos-cli-emacs-controller)
 
 (defgroup aiaos-cli-emacs-security nil
   "AIAOS CLI Emacs安全机制"
-  :prefix "aiaos-cli-emacs-security-")
+  :prefix "aiaos-cli-emacs-security-"
+  :group 'aiaos-cli-emacs)
 
 ;;; 配置
 

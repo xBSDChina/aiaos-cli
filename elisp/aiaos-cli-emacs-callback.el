@@ -9,7 +9,8 @@
 
 (defgroup aiaos-cli-emacs-callback nil
   "AIAOS CLI Emacs回调层"
-  :prefix "aiaos-cli-emacs-callback-")
+  :prefix "aiaos-cli-emacs-callback-"
+  :group 'aiaos-cli-emacs)
 
 ;;; 事件类型定义
 
@@ -105,7 +106,7 @@
 
 ;;; 同步到AIAOS CLI
 
-(defun aiaos-cli-emacs-callback-sync-to-aiaos (event-type &rest args)
+(defun aiaos-cli-emacs-callback-sync-to-aiaos (event-type &rest _args)
   "同步事件到AIAOS CLI"
   (aiaos-log "info" "Emacs event" (list (cons 'event-type event-type)
                                         (cons 'buffer (current-buffer))

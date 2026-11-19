@@ -10,7 +10,8 @@
 
 (defgroup aiaos-cli-emacs-call nil
   "AIAOS CLI Emacs调用层"
-  :prefix "aiaos-cli-emacs-call-")
+  :prefix "aiaos-cli-emacs-call-"
+  :group 'aiaos-cli-emacs)
 
 ;;; 变量定义
 
@@ -53,10 +54,10 @@
                :status 'pending)))
     (puthash id item aiaos-cli-emacs-call-queue)
     ;; 直接执行，不通过AIAOS核心转发
-    (aiaos-cli-emacs-call-execute id command args callback)
+    (aiaos-cli-emacs-call-execute id command args)
     id))
 
-(defun aiaos-cli-emacs-call-execute (id command args callback)
+(defun aiaos-cli-emacs-call-execute (id command args)
   "执行调用"
   (condition-case err
       (let ((result (apply command args)))

@@ -9,7 +9,8 @@
 
 (defgroup aiaos-cli-emacs-adapter nil
   "AIAOS CLI Emacs适配层"
-  :prefix "aiaos-cli-emacs-adapter-")
+  :prefix "aiaos-cli-emacs-adapter-"
+  :group 'aiaos-cli-emacs)
 
 ;;; 变量定义
 

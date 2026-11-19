@@ -10,7 +10,8 @@
 
 (defgroup aiaos-cli-emacs-controller nil
   "AIAOS CLI Emacs管控层"
-  :prefix "aiaos-cli-emacs-controller-")
+  :prefix "aiaos-cli-emacs-controller-"
+  :group 'aiaos-cli-emacs)
 
 ;;; 变量定义
 
@@ -137,7 +138,7 @@
   "获取当前模式"
   (aiaos-cli-emacs-controller-with-retry
    (lambda ()
-     (major-mode))))
+     major-mode)))
 
 ;;; 命令执行
 

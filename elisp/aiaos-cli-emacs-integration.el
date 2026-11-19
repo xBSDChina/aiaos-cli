@@ -11,7 +11,8 @@
 
 (defgroup aiaos-cli-emacs-integration nil
   "AIAOS CLI Emacs集成层"
-  :prefix "aiaos-cli-emacs-integration-")
+  :prefix "aiaos-cli-emacs-integration-"
+  :group 'aiaos-cli-emacs)
 
 ;;; 缓冲区操作
 

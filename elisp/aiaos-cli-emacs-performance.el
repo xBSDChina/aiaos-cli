@@ -10,7 +10,8 @@
 
 (defgroup aiaos-cli-emacs-performance nil
   "AIAOS CLI Emacs性能优化"
-  :prefix "aiaos-cli-emacs-performance-")
+  :prefix "aiaos-cli-emacs-performance-"
+  :group 'aiaos-cli-emacs)
 
 ;;; 配置
 
@@ -50,7 +51,7 @@
     (when entry
       (if (aiaos-cli-emacs-perf-cache-valid-p cache)
           (cdr entry)
-        (remhash key (aiaos-cli-emacs-perc-cache-data cache))
+        (remhash key (aiaos-cli-emacs-perf-cache-data cache))
         nil))))
 
 (defun aiaos-cli-emacs-perf-cache-set (cache key value)

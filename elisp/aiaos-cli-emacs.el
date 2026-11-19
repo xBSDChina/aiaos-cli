@@ -15,7 +15,8 @@
 
 (defgroup aiaos-cli-emacs nil
   "AIAOS CLI Emacs集成"
-  :prefix "aiaos-cli-emacs-")
+  :prefix "aiaos-cli-emacs-"
+  :group 'aiaos)
 
 ;;; 配置变量
 
