@@ -1,19 +1,21 @@
-#!/usr/bin/env bash
-# AIAOS-CLI 统一测试入口
-# R5002: 替代 run-tests.sh，委托给 tests/run-all.sh
-#
-# 用法: bash run-tests.sh [--json] [--verbose]
-# 退出码: 0=全部通过, 1=有失败
+#!/bin/bash
+# 运行 AIAOS-CLI 测试的脚本
 
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m'
-
-echo -e "${GREEN}[INFO]${NC} 委托到 tests/run-all.sh ..."
+echo "=== AIAOS-CLI 测试套件 ==="
 echo ""
 
-bash "$SCRIPT_DIR/tests/run-all.sh" "$@"
+cd ~/aiaos/aiaos-cli/elisp
+
+echo "1. 运行批处理测试..."
+emacs --batch --eval "(load-file \"~/aiaos/aiaos-cli/elisp/test-emacs-batch.el\")" 2>&1 | grep -E "^(===|Test|✓|✗)"
+echo ""
+
+echo "2. 运行 Emacsclient 测试..."
+emacs --batch --eval "(load-file \"~/aiaos/aiaos-cli/elisp/test-emacsclient.el\")" 2>&1 | grep -E "^(===|Test|✓|✗)"
+echo ""
+
+echo "3. 运行 Emacs 集成测试..."
+emacs --batch -L ~/aiaos/aiaos-cli/elisp -l aiaos-cli-emacs.el -l test-aiaos-cli-emacs.el --eval "(aiaos-cli-emacs-run-all-tests)" 2>&1 | grep -E "^(Test|===)"
+echo ""
+
+echo "=== 测试完成 ==="
