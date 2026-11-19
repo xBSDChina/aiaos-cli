@@ -130,7 +130,8 @@ Each element is a list: (name endpoint model api-key &optional options)."
                         (cons :options (or options '()))
                         (cons :status 'unknown)
                         (cons :last-check nil)
-                        (cons :failure-count 0))))
+                        (cons :failure-count 0)
+                        (cons :last-error nil))))
     (setq aiaos-llm-providers
           (cons provider
                 (cl-remove-if (lambda (p) (equal (cdr (assq :name p)) name))
@@ -248,12 +249,19 @@ Returns one of: :healthy, :unstable, :down"
 (defun aiaos-llm-update-provider-status (provider status)
   "Update PROVIDER's status to STATUS."
   (let ((updated (copy-sequence provider)))
-    (setcdr (assq :status updated) status)
-    (setcdr (assq :last-check updated) (float-time))
+    (let ((status-cell (assq :status updated)))
+      (if status-cell (setcdr status-cell status)
+        (setq updated (append updated (list (cons :status status))))))
+    (let ((check-cell (assq :last-check updated)))
+      (if check-cell (setcdr check-cell (float-time))
+        (setq updated (append updated (list (cons :last-check (float-time)))))))
     (when (eq status :down)
-      (setcdr (assq :last-error updated) "connection_failed")
-      (setcdr (assq :failure-count updated)
-              (1+ (or (cdr (assq :failure-count provider)) 0))))
+      (let ((err-cell (assq :last-error updated)))
+        (if err-cell (setcdr err-cell "connection_failed")
+          (setq updated (append updated (list (cons :last-error "connection_failed"))))))
+      (let ((fail-cell (assq :failure-count updated)))
+        (if fail-cell (setcdr fail-cell (1+ (or (cdr (assq :failure-count provider)) 0)))
+          (setq updated (append updated (list (cons :failure-count 1)))))))
     (aiaos-llm-log "debug" (format "Provider %s status: %s"
                                    (cdr (assq :name provider))
                                    status))
@@ -275,7 +283,7 @@ Returns one of: :healthy, :unstable, :down"
         (down nil))
     (dolist (provider aiaos-llm-providers)
       (let ((status (aiaos-llm-probe-provider provider)))
-        (case status
+        (cl-case status
           (:healthy (push provider healthy))
           (:unstable (push provider unstable))
           (:down (push provider down)))))
@@ -684,6 +692,29 @@ Returns the full response content."
             (error "Stream bridge unavailable"))))
     (error
      (aiaos-llm-handle-error err context))))
+
+(defun aiaos-llm-handle-error (err context)
+  "Handle an error ERR in the given CONTEXT.
+Returns a human-readable error message string."
+  (let ((msg (format "%s" err)))
+    (aiaos-llm-log "error" (format "LLM error in context %s: %s" context msg))
+    (format "Error occurred: %s" msg)))
+
+(defun aiaos-llm-recover-from-error (err context)
+  "Attempt to recover from an error ERR in the given CONTEXT.
+Returns non-nil if recovery was possible, nil otherwise.
+Never throws an error."
+  (let ((msg (format "%s" err)))
+    (aiaos-llm-log "warn" (format "Attempting recovery from error: %s" msg))
+    (cond
+     ;; Timeout errors are transient - retryable
+     ((string-match "timeout\|Timeout\|timed out" msg) t)
+     ;; HTTP 402 / quota / credits errors are transient
+     ((string-match "402\|quota\|credits\|insufficient" msg) t)
+     ;; Connection/network errors are transient
+     ((string-match "connection\|refused\|network\|unavailable" msg) t)
+     ;; Otherwise not recoverable
+     (t nil))))
 
 ;;; 流式任务链（R3003）
 

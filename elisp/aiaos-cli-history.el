@@ -19,6 +19,11 @@
   :type 'string
   :group 'aiaos-history)
 
+(defcustom aiaos-context-memory-file "~/.aiaos-context-memory.el"
+  "File for persistent context memory storage."
+  :type 'string
+  :group 'aiaos-history)
+
 (defvar aiaos-context-memory (make-hash-table :test 'equal)
   "Global context memory hash table.")
 
@@ -28,11 +33,10 @@
   :group 'aiaos-history)
 
 ;;; 历史记录数据结构
-(let ((history-list nil)
-      (history-index -1)
-      (context-memory (make-hash-table :test 'equal)))
-  (setq history-list nil)
-  (setq history-index -1))
+(defvar history-list nil
+  "List of history entries.")
+(defvar history-index -1
+  "Current history index.")
 
 ;;; 上下文记忆管理
 (defun aiaos-context-memory-store (key value)
@@ -54,7 +58,7 @@
                   (princ (format "(%s . %s) " k v) (current-buffer)))
                 aiaos-context-memory)
       (princ ")" (current-buffer))
-      (write-file aiaos-context-memory-file)))
+      (write-file aiaos-context-memory-file))))
 
 (defun aiaos-context-memory-load ()
   "Load context memory from file."
@@ -66,15 +70,6 @@
             (read (current-buffer))
           (error nil)))
     (make-hash-table :test 'equal)))
-
-;; 初始化上下文记忆
-(with-current-buffer (get-buffer-create "*aiaos-context*")
-  (erase-buffer)
-  (princ "(" (current-buffer))
-  (maphash (lambda (k v)
-              (princ (format "(%s . %s) " k v) (current-buffer)))
-            aiaos-context-memory)
-  (princ ")" (current-buffer)))
 
 ;;; 历史记录管理
 (defun aiaos-history-add (message)
@@ -102,7 +97,7 @@
                        (prin1-to-string (cdr (assq :message entry))))
                (current-buffer)))
       (princ ")" (current-buffer))
-      (write-file aiaos-history-file)))))
+      (write-file aiaos-history-file))))
 
 (defun aiaos-history-load ()
   "Load history from file."
@@ -152,6 +147,9 @@
   (goto-char (point-max)))
 
 ;;; 增强的 Buffer 模式
+(defvar aiaos-history-overlay nil
+  "Overlay for highlighting current history line.")
+
 (define-derived-mode aiaos-history-buffer-mode fundamental-mode "AIAOS-History"
   "Major mode for AIAOS history browsing."
   (define-key aiaos-history-buffer-mode-map (kbd "<up>") 'aiaos-history-previous-line)
@@ -194,9 +192,6 @@
   (let ((overlay (make-overlay (line-beginning-position) (line-end-position))))
     (overlay-put overlay 'face '( :background "blue" :foreground "white"))
     (setq aiaos-history-overlay overlay)))
-
-(defconst aiaos-history-overlay nil
-  "Overlay for highlighting current history line.")
 
 (defun aiaos-history-edit-entry ()
   "Edit the current history entry."
@@ -280,7 +275,7 @@
             (aiaos-history-save)))
 
 ;;; 集成到现有系统
-(after-load 'aiaos-cli-core
+(with-eval-after-load 'aiaos-cli-core
   (define-key aiaos-buffer-mode-map (kbd "<up>") 'aiaos-history-previous)
   (define-key aiaos-buffer-mode-map (kbd "<down>") 'aiaos-history-next)
   (define-key aiaos-buffer-mode-map (kbd "<prior>") 'aiaos-history-page-up)

@@ -32,17 +32,17 @@
   min         ; minimum value
   max         ; maximum value
   avg         ; average value
-  timestamp   ; last update time)
+  timestamp)  ; last update time
 
 ;;; Metrics registry
 
--var aiaos-cli-metrics-registry nil
-"Hash table of metrics (name . metric).")
+(defvar aiaos-cli-metrics-registry nil
+  "Hash table of metrics (name . metric).")
 
 ;;; Timer tracking
 
--var aiaos-cli-active-timers nil
-"Hash table of active timers (name . start-time).")
+(defvar aiaos-cli-active-timers nil
+  "Hash table of active timers (name . start-time).")
 
 ;;; Initialize monitoring
 

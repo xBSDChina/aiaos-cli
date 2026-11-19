@@ -42,8 +42,8 @@ Possible values: xor, base64"
 
 ;;; API Key Storage
 
--var aiaos-cli-security-keychain nil
-"Hash table of stored API keys (name . encrypted-key).")
+(defvar aiaos-cli-security-keychain nil
+  "Hash table of stored API keys (name . encrypted-key).")
 
 ;;; Initialize security system
 
@@ -56,14 +56,14 @@ Possible values: xor, base64"
 
 (defun aiaos-cli-security--encrypt (key)
   "Encrypt KEY using the configured method."
-  (case aiaos-cli-security-encrypt-method
+  (cl-case aiaos-cli-security-encrypt-method
     (xor (base64-encode-string (xor-string key "aiaos-cli-key")))
     (base64 (base64-encode-string key))
     (t (base64-encode-string key))))
 
 (defun aiaos-cli-security--decrypt (encrypted-key)
   "Decrypt ENCRYPTED-KEY using the configured method."
-  (case aiaos-cli-security-encrypt-method
+  (cl-case aiaos-cli-security-encrypt-method
     (xor (xor-string (base64-decode-string encrypted-key) "aiaos-cli-key"))
     (base64 (base64-decode-string encrypted-key))
     (t (base64-decode-string encrypted-key))))
@@ -130,7 +130,7 @@ Possible values: xor, base64"
 (defun aiaos-cli-security-validate-input (input type)
   "Validate INPUT against TYPE.
 Returns t if valid, nil otherwise."
-  (case type
+  (cl-case type
     (api-key
      (and (stringp input)
           (> (length input) 10)
@@ -140,7 +140,7 @@ Returns t if valid, nil otherwise."
           (string-match-p "^https?://" input)))
     (filename
      (and (stringp input)
-          (not (string-match-p "[;&|`$(){}\\[\\]!]" input))))
+          (not (string-match-p "[;&|`$(){}\\\\[\\\\]!]" input))))
     (t (and (stringp input) (> (length input) 0)))))
 
 ;;; Access control
@@ -152,8 +152,8 @@ Returns t if valid, nil otherwise."
     (network . (read write)))
   "Default ACL.")
 
--var aiaos-cli-security-acl nil
-"Access control list.")
+(defvar aiaos-cli-security-acl nil
+  "Access control list.")
 
 (defun aiaos-cli-security-init-acl ()
   "Initialize ACL."
@@ -168,8 +168,8 @@ Returns t if valid, nil otherwise."
 
 ;;; Rate limiting
 
--var aiaos-cli-security-rate-limits nil
-"Rate limit tracking (resource . (count . last-time)).")
+(defvar aiaos-cli-security-rate-limits nil
+  "Rate limit tracking (resource . (count . last-time)).")
 
 (defcustom aiaos-cli-security-rate-limit-interval 60
   "Rate limit interval in seconds."

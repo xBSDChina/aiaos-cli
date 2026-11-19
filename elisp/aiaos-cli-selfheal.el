@@ -48,11 +48,11 @@
     (critical . "System is critical"))
   "Health status descriptions.")
 
--var aiaos-cli-selfheal-current-status 'healthy
-"Current health status.")
+(defvar aiaos-cli-selfheal-current-status 'healthy
+  "Current health status.")
 
--var aiaos-cli-selfheal-check-timer nil
-"Timer for periodic health checks.")
+(defvar aiaos-cli-selfheal-check-timer nil
+  "Timer for periodic health checks.")
 
 ;;; Health check functions
 
@@ -75,7 +75,7 @@
         (push (list :type 'memory :severity 'warning
                     :message "High memory usage"
                     :data mem) issues)))
-    
+
     ;; Check LLM provider health
     (when (aiaos-cli-core-provider-p)
       (let ((status (aiaos-cli-core-provider-status)))
@@ -83,7 +83,7 @@
           (push (list :type 'provider :severity 'critical
                       :message "LLM provider is down"
                       :data status) issues))))
-    
+
     ;; Check for stale timers
     (let ((stale-count 0))
       (maphash (lambda (k v)
@@ -95,7 +95,7 @@
         (push (list :type 'resources :severity 'warning
                     :message (format "Stale timers: %d" stale-count)
                     :data stale-count) issues)))
-    
+
     issues))
 
 (defun aiaos-cli-selfheal--handle-issues (issues)
@@ -104,11 +104,11 @@
     (let ((type (alist-get :type issue))
           (severity (alist-get :severity issue)))
       (message "Self-heal: Handling %s issue (severity: %s)" type severity)
-      (case type
+      (cl-case type
         (memory (aiaos-cli-selfheal--recover-memory issue))
         (provider (aiaos-cli-selfheal--recover-provider issue))
         (resources (aiaos-cli-selfheal--recover-resources issue))
-        (t (message "No recovery for issue type: %s" type))))
+        (t (message "No recovery for issue type: %s" type)))))
   (aiaos-cli-selfheal--update-status issues))
 
 ;;; Recovery functions
@@ -133,6 +133,7 @@
              (when (> (float-time (time-subtract (current-time) v))
                       300)
                (remhash k aiaos-cli-active-timers)))
+           aiaos-cli-active-timers)
   (message "Resource cleanup complete"))
 
 ;;; Status management
@@ -153,14 +154,14 @@
     (dolist (issue issues)
       (let ((severity (alist-get :severity issue)))
         (incf max-severity
-              (case severity
+              (cl-case severity
                 (info 0)
                 (warning 1)
                 (error 2)
                 (critical 3)
                 (t 1)))))
     (aiaos-cli-selfheal--set-status
-     (case max-severity
+     (cl-case max-severity
        (0 'healthy)
        (1 'degraded)
        (2 'unhealthy)
@@ -173,7 +174,7 @@
   "Perform automatic recovery if needed."
   (when aiaos-cli-selfheal-auto-recover
     (let ((status aiaos-cli-selfheal-current-status))
-      (case status
+      (cl-case status
         ((unhealthy critical)
          (message "Triggering automatic recovery...")
          (aiaos-cli-selfheal-check))

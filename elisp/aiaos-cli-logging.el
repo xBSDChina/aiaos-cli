@@ -32,7 +32,7 @@
 (defcustom aiaos-cli-log-file nil
   "Log file path."
   :type 'file
-  :group 'aiaos-cli-logging")
+  :group 'aiaos-cli-logging)
 
 ;; Log levels
 (defconst aiaos-cli-log-levels
@@ -40,8 +40,8 @@
   "Log level priorities.")
 
 ;; Log buffer
--var aiaos-cli-log-buffer nil
-"Log buffer.")
+(defvar aiaos-cli-log-buffer nil
+  "Log buffer.")
 
 ;;; Logging functions
 
