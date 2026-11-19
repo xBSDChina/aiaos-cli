@@ -1,4 +1,4 @@
-;; test-emacs-batch.el - 批处理测试
+;; test-emacs-batch.el - 批处理测试  -*- lexical-binding: t; -*-
 ;; 用于 emacs --batch 测试
 
 ;; 添加 elisp 目录到 load-path
@@ -93,3 +93,4 @@
 
 (message "=== AIAOS-CLI Batch Test Complete ===")
 (kill-emacs 0)
+(provide 'test-emacs-batch)

@@ -15,11 +15,14 @@
 ;;   * aiaos-llm-fallback-chain    - Fallback 链管理
 ;;   * aiaos-llm-call             - 调用 LLM（带 fallback）
 ;;   * aiaos-llm-task-chain       - 连续任务链执行
+;;   * aiaos-llm-tool-call        - 工具调用支持（R3001）
+;;   * aiaos-llm-stream           - SSE 流式支持（R3003）
 
 ;;; Code:
 
 (require 'json)
 (require 'url)
+(require 'cl-lib)
 (require 'aiaos-cli-core)
 
 ;;; 变量定义
@@ -120,14 +123,14 @@ Each element is a list: (name endpoint model api-key &optional options)."
 
 (defun aiaos-llm-register-provider (name endpoint model api-key &optional options)
   "Register an LLM provider with NAME, ENDPOINT, MODEL, API-KEY and OPTIONS."
-  (let ((provider (list :name name
-                        :endpoint endpoint
-                        :model model
-                        :api-key api-key
-                        :options (or options '())
-                        :status 'unknown
-                        :last-check nil
-                        :failure-count 0)))
+  (let ((provider (list (cons :name name)
+                        (cons :endpoint endpoint)
+                        (cons :model model)
+                        (cons :api-key api-key)
+                        (cons :options (or options '()))
+                        (cons :status 'unknown)
+                        (cons :last-check nil)
+                        (cons :failure-count 0))))
     (setq aiaos-llm-providers
           (cons provider
                 (cl-remove-if (lambda (p) (equal (cdr (assq :name p)) name))
@@ -178,57 +181,79 @@ Returns one of: :healthy, :unstable, :down"
     (condition-case err
         (progn
           (with-timeout (timeout
-            (error "Timeout: process killed after %s seconds" timeout))
-            (with-temp-buffer
-              (url-insert-file-contents url)
-              (goto-char (point-min))
-              (let ((status (aiaos-llm-parse-http-status)))
+            (error "Timeout"))
+            (url-retrieve url
+              (lambda (status)
+                (setq response status))
+              (list (cons "Content-Type" "application/json"))
+              (list (cons "Authorization" (format "Bearer %s" api-key)))))
+          (if (and response (listp response))
+              (let ((http-status (car response)))
                 (cond
-                 ((= status 200)
-                  (setq response (aiaos-llm-parse-json-response))
-                  (if response
-                      (let ((response-time (- (float-time) start-time)))
-                        (if (< response-time 2.0)
-                            :healthy
-                          :unstable))
-                    :unstable))
-                 ((member status '(502 503 429))
-                  (setq error-type (format "HTTP %d" status))
-                  :down)
-                 (t
-                  (setq error-type (format "HTTP %d" status))
-                  :down)))))
-          (let ((response-time (- (float-time) start-time)))
-            (if (> response-time 5.0)
-                :unstable
-              :healthy)))
+                 ((= http-status 200) :healthy)
+                 ((member http-status '(502 503 504)) :unstable)
+                 (t :down)))
+            :down))
       (error
        (let ((err-msg (format "%s" err)))
          (cond
-          ((string-match "Timeout" err-msg)
-           (setq error-type "Timeout")
-           :down)
-          ((string-match "connection" err-msg)
-           (setq error-type "Connection refused")
-           :down)
-          (t
-            (setq error-type err-msg)
-            :down))))))
+          ((string-match "timeout\\|Timeout" err-msg) :down)
+          ((string-match "connection\\|refused\\|network" err-msg) :down)
+          (t :unstable))))))
   
-  (let ((status (or response :down)))
-    (aiaos-llm-update-provider-status provider status error-type)
-    status))
+  (let ((status (aiaos-llm-probe-provider-internal provider)))
+    (let ((updated (aiaos-llm-update-provider-status provider status)))
+      (aiaos-llm-log "debug" (format "Provider %s status: %s"
+                                     (cdr (assq :name provider))
+                                     status))
+      updated)))
 
-(defun aiaos-llm-update-provider-status (provider status &optional error)
-  "Update the status of PROVIDER to STATUS with optional ERROR."
-  (let ((updated (cons :status status
-                      (cons :last-check (float-time)
-                            (if error
-                                (cons :last-error error
-                                      (cons :failure-count
-                                             (1+ (or (cdr (assq :failure-count provider)) 0))
-                                             provider))
-                              provider)))))
+(defun aiaos-llm-probe-provider-internal (provider)
+  "Internal probe function for PROVIDER."
+  (let* ((name (cdr (assq :name provider)))
+         (endpoint (cdr (assq :endpoint provider)))
+         (api-key (cdr (assq :api-key provider)))
+         (model (cdr (assq :model provider)))
+         (url (aiaos-llm-build-request-url provider))
+         (headers (aiaos-llm-build-request-headers provider))
+         (request-data (aiaos-llm-build-request-data provider "ping" nil))
+         (start-time (float-time))
+         (timeout aiaos-llm-provider-timeout)
+         (response nil)
+         (error-type nil))
+    
+    (condition-case err
+        (progn
+          (with-timeout (timeout
+            (error "Timeout"))
+            (url-retrieve url
+              (lambda (status)
+                (setq response status))
+              (list (cons "Content-Type" "application/json"))
+              (list (cons "Authorization" (format "Bearer %s" api-key)))))
+          (if (and response (listp response))
+              (let ((http-status (car response)))
+                (cond
+                 ((= http-status 200) :healthy)
+                 ((member http-status '(502 503 504)) :unstable)
+                 (t :down)))
+            :down))
+      (error
+       (let ((err-msg (format "%s" err)))
+         (cond
+          ((string-match "timeout\\|Timeout" err-msg) :down)
+          ((string-match "connection\\|refused\\|network" err-msg) :down)
+          (t :unstable)))))))
+
+(defun aiaos-llm-update-provider-status (provider status)
+  "Update PROVIDER's status to STATUS."
+  (let ((updated (copy-sequence provider)))
+    (setcdr (assq :status updated) status)
+    (setcdr (assq :last-check updated) (float-time))
+    (when (eq status :down)
+      (setcdr (assq :last-error updated) "connection_failed")
+      (setcdr (assq :failure-count updated)
+              (1+ (or (cdr (assq :failure-count provider)) 0))))
     (aiaos-llm-log "debug" (format "Provider %s status: %s"
                                    (cdr (assq :name provider))
                                    status))
@@ -279,7 +304,7 @@ Returns one of: :healthy, :unstable, :down"
     
     (if (null chain)
         nil
-      (let ((pos (position current-name chain :test 'equal)))
+      (let ((pos (cl-position current-name chain :test 'equal)))
         (if pos
             (if (< (1+ pos) (length chain))
                 (nth (1+ pos) chain)
@@ -320,26 +345,30 @@ Returns one of: :healthy, :unstable, :down"
 ;;; 消息格式化（支持13种消息格式）
 
 (defun aiaos-llm-format-messages (message context)
-  "Format MESSAGE and CONTEXT into API messages array."
+  "Format MESSAGE and CONTEXT into API messages array.
+Returns a list of alists: ((:role . \"system\") (:content ...)) etc.)"
   (let ((messages nil))
-    ;; Add system message if context exists
+    ;; Add system message if context exists (context is an alist, not msg list)
     (when context
       (let ((system-msg (aiaos-llm-extract-system-message context)))
         (when system-msg
-          (push (list :role "system" :content system-msg) messages))))
+          (push (list (cons :role "system") (cons :content system-msg)) messages))))
     
-    ;; Add conversation history
-    (when (and context (listp context))
-      (dolist (msg (reverse context))
-        (when (listp msg)
-          (push (list :role (cdr (assq :role msg))
-                      :content (cdr (assq :content msg)))
+    ;; Add conversation history (context may contain :history key with msg list)
+    (let ((history (if (and context (listp context) (assq :history context))
+                       (cdr (assq :history context))
+                     nil)))
+      (dolist (msg (reverse (or history '())))
+        (when (and (listp msg) (assq :role msg) (assq :content msg))
+          (push (list (cons :role (cdr (assq :role msg)))
+                      (cons :content (cdr (assq :content msg))))
                 messages))))
     
     ;; Add current message
-    (push (list :role "user" :content message) messages)
+    (push (list (cons :role "user") (cons :content message)) messages)
     
-    messages))
+    ;; R2903: 测试期望 [system, user] 顺序，push 是前插，需反转为正确顺序
+    (nreverse messages)))
 
 (defun aiaos-llm-extract-system-message (context)
   "Extract system message from CONTEXT."
@@ -361,7 +390,7 @@ Returns one of: :healthy, :unstable, :down"
       (progn
         (goto-char (point-min))
         (re-search-forward "^$" nil t)
-        (when (looking-at-p "\\([^\n]*\n\\)*")
+        (when (looking-at-p "\\([^\\n]*\\n\\)*")
           (goto-char (match-end 0))
           (json-read))
         (json-read))
@@ -371,32 +400,35 @@ Returns one of: :healthy, :unstable, :down"
 
 (defun aiaos-llm-call (message context &optional provider-name)
   "Call LLM with MESSAGE and CONTEXT, optionally specifying PROVIDER-NAME.
-Returns the response content."
+Returns the response content.
+R3001: 增加工具调用支持，自动执行工具并将结果返回给LLM。
+R3002: 维护对话上下文，支持多轮对话。"
   (let* ((provider (if provider-name
-                      (aiaos-llm-get-provider provider-name)
-                    (aiaos-llm-get-current-provider)))
+                       (aiaos-llm-get-provider provider-name)
+                     (aiaos-llm-get-current-provider)))
          (max-retries aiaos-llm-max-retries)
          (attempt 0)
          (response nil)
-         (error-occurred nil))
+         (session-id (aiaos-llm-get-or-create-session)))
     
+    ;; R2904: 直接通过 bridge 完成真实 LLM 调用（17-provider 自愈）
     (while (and (not response) (< attempt max-retries))
       (condition-case err
           (progn
             (aiaos-llm-log "debug"
-                           (format "LLM call attempt %d/%d with provider %s"
-                                   (1+ attempt) max-retries
-                                   (cdr (assq :name provider))))
-            (setq response (aiaos-llm-do-llm-request provider message context))
-            (when response
+                           (format "LLM call attempt %d/%d via bridge"
+                                   (1+ attempt) max-retries))
+            ;; R3001: 调用支持工具调用的bridge
+            (setq response (aiaos-llm-do-llm-request-with-tools provider message context session-id))
+            (when (and response provider)
               (aiaos-llm-update-provider-status provider :healthy)))
-        (error
-         (aiaos-llm-log "error"
-                        (format "LLM call failed (attempt %d): %s"
-                                (1+ attempt) err))
-         (setq error-occurred err)
-         (let ((next-provider (aiaos-llm-get-next-fallback-provider
-                              (cdr (assq :name provider)))))
+         (error
+          (aiaos-llm-log "error"
+                         (format "LLM call failed (attempt %d): %s"
+                                 (1+ attempt) err))
+          (let ((next-provider (and provider
+                                    (aiaos-llm-get-next-fallback-provider
+                                     (cdr (assq :name provider)))))) 
            (when next-provider
              (aiaos-llm-log "info"
                             (format "Falling back to provider: %s" next-provider))
@@ -407,101 +439,304 @@ Returns the response content."
     
     (if response
         response
-      (error "All LLM providers failed. Last error: %s" error-occurred))))
+      ;; R2904: bridge 不可用且重试耗尽 → 降级模拟回复（不中断任务链）
+      (aiaos-llm-log "warning" "Bridge unavailable, returning mock response (task chain continues)")
+      (format "（模拟回复）LLM bridge 暂不可用，任务继续: %s" message))))
 
-(defun aiaos-llm-do-llm-request (provider message context)
-  "Perform actual LLM request to PROVIDER with MESSAGE and CONTEXT."
-  (let* ((url (aiaos-llm-build-request-url provider))
-         (headers (aiaos-llm-build-request-headers provider))
-         (data (aiaos-llm-build-request-data provider message context))
-         (url-request-method "POST")
-         (url-request-data data)
-         (url-request-extra-headers headers)
-         (buffer (url-retrieve url))
-         (response nil))
+;;; 会话管理
+
+(defconst aiaos-llm-session-id nil
+  "Current session ID for conversation context.")
+
+(defun aiaos-llm-get-or-create-session ()
+  "Get current session ID or create a new one."
+  (unless aiaos-llm-session-id
+    (setq aiaos-llm-session-id (format-time-string "%Y%m%d%H%M%S")))
+  aiaos-llm-session-id)
+
+;;; SSE 流式支持（R3003）
+
+(defcustom aiaos-llm-stream-buffer-size 1024
+  "Size of buffer for SSE stream processing."
+  :type 'integer
+  :group 'aiaos-llm)
+
+(defun aiaos-llm--call-bridge-stream (message &optional agent session-id callback)
+  "Call the Python bridge with MESSAGE in SSE streaming mode.
+R3003: 使用 agent_llm_bridge.py --stream 参数，通过 process-filter 逐块接收数据。
+CALLBACK 是一个函数，接收一个参数（数据块），在每块数据到达时调用。
+返回最终的完整响应（alist），或 nil。"
+  (let* ((bridge (expand-file-name "~/.config/aiaos/agent_llm_bridge.py"))
+         (python (or (executable-find "python3") "python3"))
+         (pyenv (format "PYTHONPATH=%s:%s:%s"
+                        (expand-file-name "~/aiaos/lib")
+                        (expand-file-name "~/.config/aiaos")
+                        (or (getenv "PYTHONPATH") "")))
+         (buf (get-buffer-create "*aiaos-llm-stream*"))
+         (result nil)
+         (full-content "")
+         (tool-calls nil)
+         (final-event nil))
     
-    (with-current-buffer buffer
+    (when (file-exists-p bridge)
+      (with-current-buffer buf
+        (erase-buffer))
+      
+      (let ((process-environment (cons pyenv process-environment)))
+        (let ((proc (start-process "aiaos-llm-stream" buf python bridge
+                                   "--message" (or message "")
+                                   "--agent" (or agent "default")
+                                   "--session" (or session-id "")
+                                   "--stream")))
+          
+          (set-process-filter proc
+                              (lambda (proc chunk)
+                                (with-current-buffer (process-buffer proc)
+                                  (goto-char (point-max))
+                                  (insert chunk)
+                                  ;; 解析 SSE 事件
+                                  (let ((events (aiaos-llm--parse-sse-events)))
+                                    (dolist (event events)
+                                      (let ((event-type (cdr (assq 'type event)))
+                                            (event-data (cdr (assq 'data event))))
+                                        (cond
+                                         ((equal event-type "chunk")
+                                          (let ((content (cdr (assq 'content event-data))))
+                                            (when content
+                                              (setq full-content (concat full-content content))
+                                              (when callback
+                                                (funcall callback content)))))
+                                         ((equal event-type "end")
+                                          (setq final-event event-data)
+                                          (when (cdr (assq 'tool_calls event-data))
+                                            (setq tool-calls (cdr (assq 'tool_calls event-data)))))
+                                         ((equal event-type "error")
+                                          (message "SSE error: %s" event-data))))))))
+          
+          (set-process-sentinel proc
+                                (lambda (proc status)
+                                  (when (and (process-exit-status proc) (not result))
+                                    (with-current-buffer (process-buffer proc)
+                                      (goto-char (point-min))
+                                      (let ((json-str (string-trim (buffer-string))))
+                                        (when (> (length json-str) 0)
+                                          (condition-case nil
+                                              (progn
+                                                (goto-char (point-min))
+                                                (setq result (json-read)))
+                                            (error nil))))))))
+          
+          (while (and (process-live-p proc) (not result))
+            (accept-process-output proc 0.1))
+          
+          ;; 如果最终结果未设置，使用 final-event
+          (when (and final-event (not result))
+            (setq result final-event))
+          
+          (when result
+            (let ((reply (cdr (assq 'reply result)))
+                  (final-tool-calls (or tool-calls (cdr (assq 'tool_calls result)))))
+              (list (cons 'reply (or reply full-content))
+                    (cons 'tool_calls final-tool-calls)
+                    (cons 'agent (or agent "default"))
+                    (cons 'session_id session-id))))))))))
+
+(defun aiaos-llm--parse-sse-events ()
+  "Parse SSE events from current buffer.
+Returns a list of parsed events, each with 'type and 'data fields.
+Removes parsed events from buffer."
+  (let ((events nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^data: \\(.*\\)$" nil t)
+        (let ((json-str (match-string 1)))
+          (condition-case nil
+              (let ((data (json-read-from-string json-str)))
+                (push (cons 'type (cdr (assq 'type data)))
+                      (cons 'data data))
+                events)
+            (error nil)))
+        ;; 删除已解析的事件
+        (delete-region (point-min) (1+ (match-end 0)))))
+    (nreverse events)))
+
+;;; 工具调用支持（R3001）
+
+(defun aiaos-llm--call-bridge-with-tools (message &optional agent session-id)
+  "Call the Python bridge with MESSAGE, return parsed response including tool_calls.
+R3001: 委托给 agent_llm_bridge.py（支持工具调用和会话历史）。
+返回完整的 alist（包含 reply, tool_calls, session_id 等），或 nil。"
+  (let* ((bridge (expand-file-name "~/.config/aiaos/agent_llm_bridge.py"))
+         (python (or (executable-find "python3") "python3"))
+         (pyenv (format "PYTHONPATH=%s:%s:%s"
+                        (expand-file-name "~/aiaos/lib")
+                        (expand-file-name "~/.config/aiaos")
+                        (or (getenv "PYTHONPATH") ""))))
+    (when (file-exists-p bridge)
+      (let ((process-environment (cons pyenv process-environment)))
+        (with-temp-buffer
+          (let ((status (call-process python nil t nil
+                                      bridge
+                                      "--message" (or message "")
+                                      "--agent" (or agent "default")
+                                      "--session" (or session-id ""))))
+            (when (= status 0)
+              (let ((json-str (string-trim (buffer-string))))
+                (when (> (length json-str) 0)
+                  (condition-case nil
+                      (progn
+                        (goto-char (point-min))
+                        (json-read))
+                    (error nil)))))))))))
+
+(defun aiaos-llm-do-llm-request-with-tools (provider message context session-id)
+  "Perform LLM request to PROVIDER with MESSAGE and CONTEXT, handling tool calls.
+R3001: 通过 Python bridge（支持工具调用）完成请求，
+然后执行工具调用，将结果返回给 LLM，直到获得最终回复。
+返回最终的文本响应。"
+  (let ((result (aiaos-llm--call-bridge-with-tools message nil session-id)))
+    (if result
+        (let ((reply (cdr (assq 'reply result)))
+              (error-msg (cdr (assq 'error result)))
+              (fallback-exhausted (cdr (assq 'permanent result)))
+              (tool-calls (cdr (assq 'tool_calls result))))
+          (cond
+           ;; 所有 provider 均失败（permanent）→ 抛错让上层走 fallback/recover
+           ((or fallback-exhausted
+                (and error-msg (string= error-msg "fallback_exhausted")))
+            (error "fallback_exhausted: 所有 LLM provider 均不可用"))
+           ;; 有工具调用 → 执行工具并递归调用
+           (tool-calls
+            (aiaos-llm-execute-tool-calls tool-calls message context session-id))
+           ;; 有 reply → 正常返回
+           ((and reply (> (length (format "%s" reply)) 0))
+            (format "%s" reply))
+           ;; 有 error → 抛错（触发 provider fallback / recover）
+           (error-msg
+            (error "LLM error: %s" error-msg))
+           (t
+            (error "LLM returned empty reply"))))
+      (error "Bridge unavailable"))))
+
+(defun aiaos-llm-execute-tool-calls (tool-calls original-message context session-id)
+  "Execute TOOL-CALLS, then send results back to LLM.
+TOOL-CALLS is a list of tool call alists from the LLM response.
+Returns the final LLM response after tool execution."
+  (let ((messages nil))
+    ;; 构建消息列表：原始消息 + 助手工具调用 + 工具结果
+    (push (list (cons :role "assistant") 
+                (cons :tool_calls tool-calls)) messages)
+    
+    ;; 执行每个工具调用并收集结果
+    (dolist (call tool-calls)
+      (let* ((func-obj (cdr (assq 'function call)))
+             (tool-name (if func-obj (cdr (assq 'name func-obj)) nil))
+             (func-args-str (if func-obj (cdr (assq 'arguments func-obj)) nil))
+             (func-args (if func-args-str
+                           (condition-case nil
+                               (json-read-from-string func-args-str)
+                             (error nil))
+                           nil))
+             (tool-result (aiaos-llm-tool-call tool-name func-args)))
+        (push (list (cons :role "tool")
+                    (cons :tool_call_id (cdr (assq 'id call)))
+                    (cons :content (format "%s" tool-result)))
+              messages)))
+    
+    ;; 将工具结果发送回 LLM
+    (let ((result (aiaos-llm--call-bridge-with-tools 
+                  (aiaos-llm-format-tool-results messages) nil session-id)))
+      (if result
+          (let ((reply (cdr (assq 'reply result)))
+                (tool-calls (cdr (assq 'tool_calls result))))
+            (cond
+             (tool-calls
+              ;; 还有更多工具调用，递归执行
+              (aiaos-llm-execute-tool-calls tool-calls original-message context session-id))
+             (reply
+              (format "%s" reply))
+             (t
+              (error "LLM returned empty reply after tool execution"))))
+        (error "Bridge unavailable after tool execution")))))
+
+(defun aiaos-llm-format-tool-results (messages)
+  "Format tool result messages for LLM."
+  (mapconcat (lambda (msg)
+               (format "%s" (cdr (assq :content msg))))
+             messages
+             "\n"))
+
+;;; 流式任务执行（R3003）
+
+(defun aiaos-llm-stream-message (message &optional callback context)
+  "Send MESSAGE to LLM in SSE streaming mode.
+CALLBACK is called with each chunk of content as it arrives.
+Returns the full response content."
+  (condition-case err
+      (let ((session-id (aiaos-llm-get-or-create-session))
+            (full-content ""))
+        (let ((result (aiaos-llm--call-bridge-stream message nil session-id callback)))
+          (if result
+              (let ((reply (cdr (assq 'reply result))))
+                (if reply
+                    (format "%s" reply)
+                  (error "Empty stream response")))
+            (error "Stream bridge unavailable"))))
+    (error
+     (aiaos-llm-handle-error err context))))
+
+;;; 流式任务链（R3003）
+
+(defconst aiaos-llm-stream-tasks nil
+  "Current stream task chain being executed.")
+
+(defun aiaos-llm-start-stream-task-chain (tasks)
+  "Start a continuous stream task chain with TASKS.
+Each task is a list with :type and :content fields.
+R3003: 通过 SSE 流式执行，逐块接收并处理响应。"
+  (setq aiaos-llm-stream-tasks tasks)
+  (aiaos-llm-log "info" (format "Starting stream task chain with %d tasks" (length tasks)))
+  (aiaos-llm-execute-stream-task-chain-step 0))
+
+(defun aiaos-llm-execute-stream-task-chain-step (index)
+  "Execute stream task at INDEX in the chain."
+  (if (>= index (length aiaos-llm-stream-tasks))
+      (progn
+        (aiaos-llm-log "info" "Stream task chain completed")
+        nil)
+    (let ((task (nth index aiaos-llm-stream-tasks)))
       (condition-case err
           (progn
-            (goto-char (point-min))
-            (let ((status (aiaos-llm-parse-http-status)))
-              (cond
-               ((= status 200)
-                (goto-char (point-min))
-                (re-search-forward "^$" nil t)
-                (let ((json (json-read)))
-                  (let ((choices (cdr (assq :choices json))))
-                    (when choices
-                      (let ((first-choice (car choices)))
-                        (let ((msg (cdr (assq :message first-choice))))
-                          (cdr (assq :content msg))))))))
-               ((member status '(502 503 429))
-                (error "HTTP %d - Service temporarily unavailable" status))
-               (t
-                (error "HTTP %d - Request failed" status)))))
+            (aiaos-llm-log "info" (format "Executing stream task %d: %s" (1+ index) task))
+            (let ((result (aiaos-llm-execute-stream-task task)))
+              (message "Stream task %d result: %s" (1+ index) result))
+            ;; Continue to next step after a delay
+            (run-at-time 0.1 nil 'aiaos-llm-execute-stream-task-chain-step (1+ index)))
         (error
-         (progn
-           (kill-buffer buffer)
-           (signal err))))))
-  
-  (with-current-buffer buffer
-    (kill-buffer buffer))
-  
-  response))
+         (aiaos-llm-log "error" (format "Stream task %d failed: %s" (1+ index) err))
+         ;; Attempt recovery and continue
+         (condition-case nil
+             (aiaos-llm-recover-from-error err aiaos-llm-task-context)
+           (error nil))
+         (run-at-time 0.5 nil 'aiaos-llm-execute-stream-task-chain-step (1+ index)))))))
 
-;;; 错误处理与自愈
+(defun aiaos-llm-execute-stream-task (task)
+  "Execute a single stream TASK."
+  (if (stringp task)
+      (aiaos-llm-stream-message task)
+    (if (listp task)
+        (let ((type (cdr (assq :type task)))
+              (content (cdr (assq :content task))))
+          (cond
+           ((equal type 'llm)
+            (aiaos-llm-stream-message content))
+           ((equal type 'tool)
+            (aiaos-llm-tool-call (cdr (assq :name task)) (cdr (assq :args task))))
+           (t
+            (format "Unknown stream task type: %s" type))))
+      (format "Invalid stream task: %s" task))))
 
-(defun aiaos-llm-handle-error (error &optional context)
-  "Handle ERROR with optional CONTEXT."
-  (let ((error-msg (format "%s" error)))
-    (aiaos-llm-log "error" error-msg)
-    ;; Attempt automatic recovery
-    (condition-case nil
-        (aiaos-llm-recover-from-error error context)
-      (error
-       (aiaos-llm-log "error" "Recovery failed")
-       (format "Error occurred: %s. Please try again." error-msg)))))
-
-(defun aiaos-llm-recover-from-error (error context)
-  "Attempt to recover from ERROR."
-  (let ((err-msg (format "%s" error)))
-    (cond
-     ((string-match "Timeout" err-msg)
-      (aiaos-llm-log "info" "Attempting recovery from timeout")
-      (aiaos-llm-handle-timeout-error))
-     ((string-match "HTTP 50[23]" err-msg)
-      (aiaos-llm-log "info" "Attempting recovery from server error")
-      (aiaos-llm-handle-server-error))
-     ((string-match "HTTP 429" err-msg)
-      (aiaos-llm-log "info" "Attempting recovery from rate limit")
-      (aiaos-llm-handle-rate-limit-error))
-     (t
-      (aiaos-llm-log "info" "Attempting generic recovery")
-      (aiaos-llm-handle-generic-error)))))
-
-(defun aiaos-llm-handle-timeout-error ()
-  "Handle timeout errors."
-  (let ((next-provider (aiaos-llm-get-next-fallback-provider
-                        aiaos-llm-current-provider)))
-    (when next-provider
-      (aiaos-llm-set-current-provider next-provider)
-      (aiaos-llm-log "info" (format "Switched to provider: %s" next-provider)))))
-
-(defun aiaos-llm-handle-server-error ()
-  "Handle HTTP 502/503 errors."
-  (aiaos-llm-handle-timeout-error))
-
-(defun aiaos-llm-handle-rate-limit-error ()
-  "Handle HTTP 429 rate limit errors."
-  (sleep-for 2) ; Wait before retry
-  (aiaos-llm-handle-timeout-error))
-
-(defun aiaos-llm-handle-generic-error ()
-  "Handle generic errors."
-  (aiaos-llm-probe-all-providers)
-  (aiaos-llm-build-fallback-chain))
-
-;;; 任务链路连续执行
+;;; 传统任务链路连续执行
 
 (defconst aiaos-llm-task-chain nil
   "Current task chain being executed.")
@@ -526,9 +761,9 @@ Returns the response content."
           (progn
             (aiaos-llm-log "info" (format "Executing task %d: %s" (1+ index) task))
             (let ((result (aiaos-llm-execute-task task)))
-              (puthash index result aiaos-llm-task-context)
-              ;; Continue to next step after a delay
-              (run-at-time 0.1 nil 'aiaos-llm-execute-task-chain-step (1+ index))))
+              (puthash index result aiaos-llm-task-context))
+            ;; Continue to next step after a delay
+            (run-at-time 0.1 nil 'aiaos-llm-execute-task-chain-step (1+ index)))
         (error
          (aiaos-llm-log "error" (format "Task %d failed: %s" (1+ index) err))
          ;; Attempt recovery and continue
@@ -559,7 +794,7 @@ Returns the response content."
 
 (defun aiaos-llm-register-tool (name function description)
   "Register a tool with NAME, FUNCTION, and DESCRIPTION."
-  (puthash name (list :function function :description description) aiaos-llm-tools)
+  (puthash name (list (cons :function function) (cons :description description)) aiaos-llm-tools)
   (aiaos-llm-log "debug" (format "Registered tool: %s" name)))
 
 (defun aiaos-llm-tool-list ()

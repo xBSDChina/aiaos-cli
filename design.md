@@ -2528,8 +2528,8 @@ skills/<name>/
 │   └── <cmd>.el            # 导出 `aiaos-cli-skill-<name>/<cmd>`
 ├── hooks/                  # 钩子（必须）
 │   ├── on-load.el          # (defun aiaos-cli-skill-<name>/on-load ())
-│   ├── pre-command.el      # (defun aiaos-cli-skill-<name>/pre-command (cmd args opts))
-│   └── post-command.el     # (defun aiaos-cli-skill-<name>/post-command (cmd args opts result))
+│   ├── pre-command.el      # (defun aiaos-cli-skill-<name>/pre-command (command args))
+│   └── post-command.el     # (defun aiaos-cli-skill-<name>/post-command (command result))
 ├── templates/              # 可选
 └── schemas/                # 可选 JSON Schema
 ```
@@ -2657,8 +2657,8 @@ git checkout -- elisp/aiaos-cli-theme.el
 2. **命令实现**：导出 `aiaos-cli-skill-<name>/<cmd>` 函数
 3. **钩子实现**：
    - `on-load`: `(defun aiaos-cli-skill-<name>/on-load ())`
-   - `pre-command`: `(defun aiaos-cli-skill-<name>/pre-command (cmd args opts))`
-   - `post-command`: `(defun aiaos-cli-skill-<name>/post-command (cmd args opts result))`
+   - `pre-command`: `(defun aiaos-cli-skill-<name>/pre-command (command args))`
+   - `post-command`: `(defun aiaos-cli-skill-<name>/post-command (command result))`
 
 #### 测试规范
 

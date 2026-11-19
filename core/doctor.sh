@@ -131,9 +131,9 @@ check_code_health() {
     local file_count
     local problem_details
 
-    issue_count=$(echo "$result" | cut -d'|' -f1)
-    file_count=$(echo "$result" | cut -d'|' -f2)
-    problem_details=$(echo "$result" | cut -d'|' -f3-)
+    issue_count=$(echo "$result" | head -1 | cut -d'|' -f1)
+    file_count=$(echo "$result" | head -1 | cut -d'|' -f2)
+    problem_details=$(echo "$result" | tail -n +2)
 
     if [[ "$issue_count" -eq 0 ]]; then
         DOCTOR_CHECKS+=("✓|code-health|ok|代码规范|检查 ${file_count} 个 .el 文件全部合规")

@@ -201,6 +201,161 @@ output_result() {
     fi
 }
 
+# R2903: dialog 模式 —— 直接调用 Python bridge，支持多 provider fallback
+# R2903: 辅助函数：从 JSON 中提取字段（避免 bash 变量展开问题）
+_json_get() {
+    local json="$1" key="$2" default="${3:-}"
+    python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+    result = data.get(sys.argv[2], sys.argv[3])
+    print(result if result is not None else sys.argv[3])
+except Exception:
+    print(sys.argv[3])
+" "$json" "$key" "$default" 2>/dev/null
+}
+
+agent_dialog() {
+    local message="" session_id="" agent_name="default" format="${AIAOS_CLI_OUTPUT_FORMAT:-stream}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --message) message="$2"; shift 2 ;;
+            --message=*) message="${1#*=}"; shift ;;
+            --session) session_id="$2"; shift 2 ;;
+            --agent) agent_name="$2"; shift 2 ;;
+            --format) format="$2"; shift 2; export AIAOS_CLI_OUTPUT_FORMAT="$format" ;;
+            *) shift ;;
+        esac
+    done
+
+    session_id="${session_id:-$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "default")}"
+
+    # 直接调用 Python bridge（含 FallbackRouter 多 provider fallback）
+    local bridge_json=""
+    if [[ -f "${HOME}/.config/aiaos/agent_llm_bridge.py" ]]; then
+        # R2903: 设置 PYTHONPATH 以便 bridge 能导入 lib 模块
+        export PYTHONPATH="${HOME}/aiaos/lib:${HOME}/.config/aiaos:${PYTHONPATH:-}"
+        bridge_json=$(timeout 30s python3 "${HOME}/.config/aiaos/agent_llm_bridge.py"             --message "$message" --agent "$agent_name" --session "$session_id" 2>/dev/null) || true
+    fi
+
+    # 解析 reply
+    local reply=""
+    if [[ -n "$bridge_json" ]]; then
+        reply=$(echo "$bridge_json" | python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    if data.get('reply'):
+        print(data['reply'])
+except Exception:
+    pass
+" 2>/dev/null) || true
+    fi
+
+    # 检查是否所有 provider 均已耗尽（永久错误，不应重试）
+    local exhausted="false"
+    if [[ -n "$bridge_json" ]]; then
+        exhausted=$(echo "$bridge_json" | python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    print('true' if data.get('error') == 'fallback_exhausted' else 'false')
+except Exception:
+    print('false')
+" 2>/dev/null) || true
+    fi
+
+    if [[ -n "$reply" ]]; then
+        local provider_info=""
+        if [[ -n "$bridge_json" ]]; then
+            provider_info=$(echo "$bridge_json" | python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    p = data.get('provider', '')
+    fu = data.get('fallback_used', False)
+    if fu:
+        print('[provider: ' + p + ']')
+    else:
+        print('')
+except Exception:
+    pass
+" 2>/dev/null) || true
+        fi
+        if [[ "$format" == "json" ]]; then
+            python3 -c "
+import json, time, sys
+response = {
+    'type': 'result',
+    'session_id': sys.argv[1],
+    'agent': sys.argv[2],
+    'message': sys.argv[3],
+    'reply': sys.argv[4],
+    'timestamp': time.time()
+}
+print(json.dumps(response))
+" "$session_id" "$agent_name" "$message" "$reply"
+        else
+            echo -n "🤖 [$agent_name] "
+            if [[ -n "$provider_info" ]]; then
+                echo -n "$provider_info "
+            fi
+            for ((i=0; i<${#reply}; i++)); do
+                echo -n "${reply:i:1}"
+                sleep 0.01
+            done
+            echo
+        fi
+    elif [[ "$exhausted" == "true" ]]; then
+        # R2903: 所有 provider 均失败 → 输出错误，标记为永久失败（notransient）
+        if [[ "$format" == "json" ]]; then
+            python3 -c "
+import json, time, sys
+response = {
+    'type': 'error',
+    'session_id': sys.argv[1],
+    'agent': sys.argv[2],
+    'message': sys.argv[3],
+    'error': '所有 LLM provider 均不可用（配额不足或服务异常），已尝试全部 fallback provider',
+    'permanent': true,
+    'timestamp': time.time()
+}
+print(json.dumps(response))
+" "$session_id" "$agent_name" "$message"
+        else
+            log_error "所有 LLM provider 均不可用，已尝试全部 fallback"
+            echo "[fallback_exhausted] 所有 LLM provider 均返回错误，请检查账户配额或稍后重试。"
+        fi
+        return 1  # R2903: 永久失败，阻止 elisp 层重试
+    else
+        # 降级：模拟回复
+        if [[ "$format" == "json" ]]; then
+            python3 -c "
+import json, time, sys
+response = {
+    'type': 'result',
+    'session_id': sys.argv[1],
+    'agent': sys.argv[2],
+    'message': sys.argv[3],
+    'reply': '（模拟回复）当前未配置可用的 LLM API 凭据，无法连接真实后端。',
+    'timestamp': time.time()
+}
+print(json.dumps(response))
+" "$session_id" "$agent_name" "$message"
+        else
+            echo -n "🤖 [$agent_name] "
+            local reply="（模拟回复）当前未配置可用的 LLM API 凭据，无法连接真实后端。"
+            for ((i=0; i<${#reply}; i++)); do
+                echo -n "${reply:i:1}"
+                sleep 0.02
+            done
+            echo
+        fi
+    fi
+}
+
 agent_chat() {
     local message="" session_id="" agent_name="default" format="${AIAOS_CLI_OUTPUT_FORMAT:-stream}"
 
@@ -218,16 +373,12 @@ agent_chat() {
     session_id="${session_id:-$(cat "${AIAOS_CLI_DATA_DIR}/sessions/.current" 2>/dev/null || echo "default")}"
 
     # 优先尝试真实 LLM（通过桥接脚本），失败则优雅降级到模拟回复
+    # R2903: bridge 现在返回 JSON，含 reply/provider/fallback_used/error 字段
     local bridge_reply=""
-    local bridge_err=""
+    local bridge_json=""
     if [[ -f "${HOME}/.config/aiaos/agent_llm_bridge.py" ]]; then
-        bridge_reply=$(python3 "${HOME}/.config/aiaos/agent_llm_bridge.py" --message "$message" --agent "$agent_name" --session "$session_id" 2>/dev/null || true)
-    fi
-
-    local real_reply=""
-    if [[ -n "$bridge_reply" ]]; then
-        # 解析 JSON 中的 reply 字段
-        real_reply=$(echo "$bridge_reply" | python3 -c "
+        bridge_json=$(timeout 30s python3 "${HOME}/.config/aiaos/agent_llm_bridge.py" --message "$message" --agent "$agent_name" --session "$session_id" 2>/dev/null || true)
+        bridge_reply=$(echo "$bridge_json" | python3 -c "
 import json, sys
 try:
     data = json.loads(sys.stdin.read())
@@ -235,10 +386,70 @@ try:
         print(data['reply'])
 except Exception:
     pass
-" 2>/dev/null)
+" 2>/dev/null) || true
     fi
 
-    if [[ -n "$real_reply" ]]; then
+    local fallback_provider=""
+    local fallback_used="false"
+    if [[ -n "$bridge_json" ]]; then
+        fallback_provider=$(echo "$bridge_json" | python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    print(data.get('provider', '') or '')
+except Exception:
+    pass
+" 2>/dev/null) || true
+        fallback_used=$(echo "$bridge_json" | python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    print(str(data.get('fallback_used', False)).lower())
+except Exception:
+    pass
+" 2>/dev/null) || true
+        # R2903: 检测到 fallback 切换，记录日志
+        if [[ "$fallback_used" == "true" && -n "$fallback_provider" ]]; then
+            log_warn "LLM provider 自动 fallback 切换: 当前使用 $fallback_provider"
+        fi
+        # R2903: 所有 provider 均失败（fallback_exhausted），输出错误信息而非静默降级
+        local bridge_error=""
+        bridge_error=$(echo "$bridge_json" | python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    if data.get('error') == 'fallback_exhausted':
+        print('fallback_exhausted')
+except Exception:
+    pass
+" 2>/dev/null) || true
+        if [[ "$bridge_error" == "fallback_exhausted" ]]; then
+            # R2903: 永久失败 → 输出结构化 JSON 并返回非零状态，
+            # 让 elisp 层知道不需要重试（而非把它当 transient 错误重试）
+            if [[ "$format" == "json" ]]; then
+                python3 -c "
+import json, time, sys
+response = {
+    'type': 'error',
+    'session_id': sys.argv[1],
+    'agent': sys.argv[2],
+    'message': sys.argv[3],
+    'error': '所有 LLM provider 均不可用，已尝试全部 fallback',
+    'permanent': true,
+    'timestamp': time.time()
+}
+print(json.dumps(response))
+" "$session_id" "$agent_name" "$message"
+            else
+                log_error "所有 LLM provider 均不可用，已尝试全部 fallback"
+                # 同时输出 fallback_exhausted 标记到 stdout，供 elisp 检测
+                echo "[fallback_exhausted] 所有 LLM provider 均返回错误，请检查账户配额或稍后重试。"
+            fi
+            return 1  # R2903: 永久失败返回非零，阻止 elisp 层重试
+        fi
+    fi
+
+    if [[ -n "$bridge_reply" ]]; then
         if [[ "$format" == "json" ]]; then
             python3 -c "
 import json, time, sys
@@ -251,11 +462,11 @@ response = {
     'timestamp': time.time()
 }
 print(json.dumps(response))
-" "$session_id" "$agent_name" "$message" "$real_reply"
+" "$session_id" "$agent_name" "$message" "$bridge_reply"
         else
             echo -n "🤖 [$agent_name] "
-            for ((i=0; i<${#real_reply}; i++)); do
-                echo -n "${real_reply:i:1}"
+            for ((i=0; i<${#bridge_reply}; i++)); do
+                echo -n "${bridge_reply:i:1}"
                 sleep 0.01
             done
             echo
@@ -515,6 +726,7 @@ main() {
     shift || true
 
     case "$action" in
+        dialog) agent_dialog "$@" ;;
         chat) agent_chat "$@" ;;
         delegate) agent_delegate "$@" ;;
         tool) agent_tool "$@" ;;

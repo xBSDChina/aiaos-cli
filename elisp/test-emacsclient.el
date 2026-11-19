@@ -1,4 +1,4 @@
-;; test-emacsclient.el - emacsclient 测试
+;; test-emacsclient.el - emacsclient 测试  -*- lexical-binding: t; -*-
 ;; 用于 emacsclient 测试
 
 ;; 添加 elisp 目录到 load-path
@@ -92,4 +92,5 @@
     (message "✗ Config command failed")))
 
 (message "=== AIAOS-CLI Emacsclient Test Complete ===")
-(kill-emacs 0)
+;; kill-emacs removed for daemon safety
+(provide 'test-emacsclient)

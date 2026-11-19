@@ -1,4 +1,4 @@
-;;; aiaos-llm-config-example.el --- AIAOS-LLM 配置示例
+;;; aiaos-llm-config-example.el --- AIAOS-LLM 配置示例  -*- lexical-binding: t; -*-
 
 ;; 展示如何配置多个 LLM provider 和 fallback 链
 
@@ -7,13 +7,13 @@
  "openai"
  "https://api.openai.com/v1"
  "gpt-4"
- (system-getenv "OPENAI_API_KEY"))
+ (getenv "OPENAI_API_KEY"))
 
 (aiaos-llm-register-provider
  "anthropic"
  "https://api.anthropic.com"
  "claude-3-opus"
- (system-getenv "ANTHROPIC_API_KEY")
+ (getenv "ANTHROPIC_API_KEY")
  '((timeout . 60)
    (retries . 3)))
 
@@ -21,7 +21,7 @@
  "google"
  "https://generativelanguage.googleapis.com"
  "gemini-pro"
- (system-getenv "GOOGLE_API_KEY"))
+ (getenv "GOOGLE_API_KEY"))
 
 ;; 设置默认 provider
 (aiaos-llm-set-current-provider "openai")
@@ -51,3 +51,4 @@
 (message "Fallback chain: %s" aiaos-llm-fallback-chain)
 
 (message "AIAOS LLM configuration example loaded successfully")
+(provide 'aiaos-llm-config-example)

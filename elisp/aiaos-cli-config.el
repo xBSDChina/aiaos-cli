@@ -36,7 +36,7 @@
 (defcustom aiaos-cli-config-auto-save t
   "Automatically save configuration on changes."
   :type 'boolean
-  :group 'aiaos-cli-config")
+  :group 'aiaos-cli-config)
 
 ;; Configuration structure
 (cl-defstruct aiaos-cli-config
@@ -49,8 +49,8 @@
   (last-loaded nil))
 
 ;; Current configuration
--var aiaos-cli-config-current nil
-"Current configuration object.")
+(defvar aiaos-cli-config-current nil
+  "Current configuration object.")
 
 ;;; Configuration loading
 
@@ -59,14 +59,14 @@
   (let ((config-file (or file aiaos-cli-config-file)))
     (if (file-exists-p config-file)
         (condition-case err
-            (with-temp-file (current-buffer)
-              (insert-file-contents config-file))
-          (let ((json-object-type 'alist))
-            (json-read-from-buffer (current-buffer)))
+            (with-temp-buffer
+              (insert-file-contents config-file)
+              (let ((json-object-type 'alist))
+                (json-read-from-buffer (current-buffer))))
           (error
            (message "Failed to load config: %s" (error-message-string err))
-           nil)
-        (make-aiaos-cli-config))))
+           nil))
+      (make-aiaos-cli-config))))
 
 (defun aiaos-cli-config-save (&optional config file)
   "Save CONFIG to FILE."

@@ -55,10 +55,10 @@
 
 ;;; Event bus
 
--var aiaos-cli-events-subscribers nil
-"Alist of (event-type . handler-list).")
+(defvar aiaos-cli-events-subscribers nil)
+"Alist of (event-type . handler-list)."
 
--var aiaos-cli-events-event-id-counter 0
+(defvar aiaos-cli-events-event-id-counter 0)
 "Counter for generating unique event IDs."
 
 ;;; Event bus management

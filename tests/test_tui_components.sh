@@ -110,7 +110,6 @@ cat > /tmp/tui_component_test-$$.el << 'ELISP'
           (if (string-match-p "100%" output)
               (message "PASS: 进度条 100% 边界测试")
               (message "FAIL: 进度条 100% 边界测试 - 输出: %S" output))))
-              (message "FAIL: 进度条组件 - 输出: %S" output))))
 
       (erase-buffer)
 

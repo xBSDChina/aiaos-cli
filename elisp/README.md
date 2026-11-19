@@ -1,216 +1,194 @@
-# AIAOS-CLI Emacs Frontend
+# AIAOS CLI Emacs 集成项目
 
-AIAOS-CLI Emacs frontend provides an Emacs interface for the AIAOS-CLI command-line tool. It follows the AIAOS-CLI paradigm defined in `~/aiaos-cli_design.md`:
+## 项目概述
 
-- **Elisp as primary, external process as auxiliary**
-- **Async non-blocking IO**
-- **Buffer as interface (not popup)**
-- **C-c a key prefix**
+AIAOS CLI Emacs 集成项目是一个将 AIAOS CLI 框架与 Emacs 编辑器深度集成的项目。它利用 Emacs Lisp 的强大扩展能力，为 AIAOS 提供了一个完整的、可编程的编辑器控制层。
 
-## Features
-
-- Run arbitrary aiaos-cli subcommands from Emacs
-- Session management (create, list, switch, close)
-- Context management (set, list, export, clear)
-- Skill management (load, list, execute)
-- Agent chat (interactive)
-- Environment doctor (`aiaos-cli-doctor`)
-- Log tailing in dedicated buffer
-- Customizable major modes for results and chat
-
-## Installation
-
-### Prerequisites
-
-- Emacs 29.0 or later
-- aiaos executable in PATH or specified via `aiaos-cli-bin`
-
-### Setup
-
-```elisp
-;; Add to your Emacs configuration
-(add-to-list 'load-path "/path/to/aiaos-cli/elisp")
-(require 'aiaos-cli)
-(aiaos-cli-init)
-```
-
-### Keybindings
-
-After loading, the following keybindings are available (prefix `C-c a`):
-
-- `C-c a r` - Run aiaos-cli subcommand
-- `C-c a s` - Session commands
-- `C-c a c` - Context commands
-- `C-c a k` - Skill commands
-- `C-c a C-c` - Agent chat
-- `C-c a d` - Doctor
-- `C-c a l` - Log tail
-
-## Configuration
-
-### Customizable Variables
-
-- `aiaos-cli-bin` - Path to the aiaos executable
-- `aiaos-cli-default-format` - Default output format (json, table, raw)
-- `aiaos-cli-async-timeout` - Timeout for async invocations (seconds)
-- `aiaos-cli-key-prefix` - Key prefix for aiaos-cli commands
-- `aiaos-cli-result-buffer-name` - Name of the result buffer
-- `aiaos-cli-chat-buffer-name` - Name of the agent chat buffer
-- `aiaos-cli-skills-dir` - Directory containing skills
-
-### Example
-
-```elisp
-;; Set custom aiaos binary path
-(customize aiaos-cli-bin "/usr/local/bin/aiaos")
-
-;; Increase timeout for complex operations
-(customize aiaos-cli-async-timeout 180)
-```
-
-## Architecture
-
-### Module Structure
+## 项目结构
 
 ```
-aiaos-cli.el              - Main entry point and keybindings
-├── aiaos-cli-core.el      - Core interfaces and types
-├── aiaos-cli-state.el     - State management
-├── aiaos-cli-context.el   - Context management
-├── aiaos-cli-lifecycle.el - Lifecycle hooks
-├── aiaos-cli-component.el - Component management
-├── aiaos-cli-components.el - Component definitions
-├── aiaos-cli-router.el    - Command routing
-├── aiaos-cli-app.el       - Application logic
-├── aiaos-cli-command.el   - Command execution
-├── aiaos-cli-theme.el     - Theme and faces
-├── aiaos-cli-llm.el       - LLM integration
-├── aiaos-cli-events.el    - Event handling
-├── aiaos-cli-history.el   - History management
-├── aiaos-cli-monitor.el   - Monitoring
-├── aiaos-cli-security.el  - Security features
-├── aiaos-cli-selfheal.el  - Self-healing mechanisms
-└── aiaos-cli-tests.el     - Test suite
+~/aiaos/aiaos-cli/elisp/
+├── aiaos-cli-core.el              # 核心配置
+├── aiaos-cli-emacs-adapter.el     # Emacs适配层
+├── aiaos-cli-emacs-controller.el  # Emacs管控层
+├── aiaos-cli-emacs-call.el        # 双向调用层
+├── aiaos-cli-emacs-callback.el    # 回调层
+├── aiaos-cli-emacs-integration.el # 集成层（主入口）
+├── aiaos-cli-llm.el               # LLM集成
+├── aiaos-cli-llm-config-example.el # LLM配置示例
+├── aiaos-cli-prompt-engine.el     # 提示引擎
+├── aiaos-cli-ripgrep.el           # Ripgrep集成
+├── aiaos-cli-toolbox.el           # 工具箱
+├── aiaos-cli-window.el            # 窗口管理
+├── aiaos-cli-workflow.el          # 工作流
+├── aiaos-emacs-bridge.el          # Emacs桥接
+├── aiaos-emacs-client.el          # Emacs客户端
+├── aiaos-emacs-commands.el        # Emacs命令
+├── aiaos-emacs-integration.el     # Emacs集成
+├── aiaos-emacs-log.el             # Emacs日志
+├── aiaos-emacs-llm.el             # Emacs LLM
+├── aiaos-emacs-mcp.el             # Emacs MCP
+├── aiaos-emacs-ripgrep.el         # Emacs Ripgrep
+├── aiaos-emacs-window.el          # Emacs窗口
+├── aiaos-emacs-workflow.el        # Emacs工作流
+├── aiaos-rsi-elisp.el             # RSI Elisp
+├── aiaos-rsi-emacs.el             # RSI Emacs
+├── aiaos-rsi-emacs-client.el      # RSI Emacs客户端
+├── aiaos-rsi-emacs-commands.el    # RSI Emacs命令
+├── aiaos-rsi-emacs-integration.el # RSI Emacs集成
+├── aiaos-rsi-emacs-log.el         # RSI Emacs日志
+├── aiaos-rsi-emacs-llm.el         # RSI Emacs LLM
+├── aiaos-rsi-emacs-mcp.el         # RSI Emacs MCP
+├── aiaos-rsi-emacs-ripgrep.el     # RSI Emacs Ripgrep
+├── aiaos-rsi-emacs-window.el      # RSI Emacs窗口
+├── aiaos-rsi-emacs-workflow.el    # RSI Emacs工作流
+├── test-aiaos-cli-llm.el          # LLM测试
+├── test-aiaos-cli-llm-batch.el    # LLM批量测试
+├── test-aiaos-cli-llm-emacsclient.el # LLM Emacs客户端测试
+├── test-aiaos-cli-llm-function.el  # LLM功能测试
+├── test-aiaos-cli-llm-interactive.el # LLM交互测试
+├── test-aiaos-cli-llm-ripgrep.el  # LLM Ripgrep测试
+├── test-aiaos-cli-llm-workflow.el  # LLM工作流测试
+├── test-aiaos-cli-ripgrep.el      # Ripgrep测试
+├── test-aiaos-cli-workflow.el      # 工作流测试
+├── test-aiaos-cli-window.el        # 窗口测试
+├── test-aiaos-emacs-bridge.el      # Emacs桥接测试
+├── test-aiaos-emacs-client.el      # Emacs客户端测试
+├── test-aiaos-emacs-commands.el    # Emacs命令测试
+├── test-aiaos-emacs-integration.el # Emacs集成测试
+├── test-aiaos-emacs-log.el         # Emacs日志测试
+├── test-aiaos-emacs-llm.el         # Emacs LLM测试
+├── test-aiaos-emacs-mcp.el         # Emacs MCP测试
+├── test-aiaos-emacs-ripgrep.el     # Emacs Ripgrep测试
+├── test-aiaos-emacs-window.el      # Emacs窗口测试
+├── test-aiaos-emacs-workflow.el    # Emacs工作流测试
+├── test-aiaos-rsi-emacs-client.el  # RSI Emacs客户端测试
+├── test-aiaos-rsi-emacs-commands.el # RSI Emacs命令测试
+├── test-aiaos-rsi-emacs-integration.el # RSI Emacs集成测试
+├── test-aiaos-rsi-emacs-log.el     # RSI Emacs日志测试
+├── test-aiaos-rsi-emacs-llm.el     # RSI Emacs LLM测试
+├── test-aiaos-rsi-emacs-mcp.el     # RSI Emacs MCP测试
+├── test-aiaos-rsi-emacs-ripgrep.el # RSI Emacs Ripgrep测试
+├── test-aiaos-rsi-emacs-window.el  # RSI Emacs窗口测试
+├── test-aiaos-rsi-emacs-workflow.el # RSI Emacs工作流测试
+├── IMPLEMENTATION-SUMMARY.md       # 实现总结
+├── MODULES.md                      # 模块说明
+├── README-AIAOS-LLM.md             # AIAOS LLM说明
+├── README-EMACS-INTEGRATION.md     # Emacs集成说明
+├── TESTING.md                      # 测试文档
+├── README.md                       # 项目说明（本文件）
+└── LICENSE                         # MIT开源协议
 ```
 
-### Design Principles
+## 核心架构
 
-1. **Elisp First**: Primary logic in Emacs Lisp, external processes only for heavy lifting
-2. **Async Non-blocking**: All I/O operations are asynchronous to keep Emacs responsive
-3. **Buffer Interface**: Results displayed in dedicated buffers, not popups
-4. **Extensible**: Skills and components can be loaded dynamically
-5. **Modular**: Each module has a single responsibility and clear interfaces
+### 1. Emacs适配层 (aiaos-cli-emacs-adapter.el)
 
-## Usage
+封装所有 Emacs API，提供统一的接口：
+- 缓冲区管理
+- 窗口管理
+- 帧管理
+- 模式管理
+- 文本操作
+- 命令执行
+- 事件系统
+- 缓存系统
 
-### Running Commands
+### 2. Emacs管控层 (aiaos-cli-emacs-controller.el)
 
-```elisp
-;; Run a simple command
-(aiaos-cli-run "list" :format 'json)
+高层管理和调度：
+- 状态管理
+- 自动同步
+- 缓冲区管控
+- 窗口管控
+- 帧管控
+- 模式管控
+- 文本编辑管控
+- 命令管控
 
-;; Run with context
-(aiaos-cli-run "search" :query "example" :limit 10)
-```
+### 3. 双向调用层 (aiaos-cli-emacs-call.el)
 
-### Session Management
+AIAOS CLI 与 Emacs 之间的双向通信：
+- 同步调用
+- 异步调用
+- 调用队列管理
+- 超时处理
+- 结果回调
 
-```elisp
-;; Create a new session
-(aiaos-cli-session-create "my-session")
+### 4. 回调层 (aiaos-cli-emacs-callback.el)
 
-;; Switch to an existing session
-(aiaos-cli-session-switch "my-session")
+Emacs 到 AIAOS CLI 的事件回调：
+- 事件类型定义
+- 回调注册表
+- Hook 设置
+- 事件触发
+- 状态同步
 
-;; Close a session
-(aiaos-cli-session-close "my-session")
-```
+### 5. 集成层 (aiaos-cli-emacs-integration.el)
 
-### Agent Chat
+整合所有组件，提供统一接口：
+- 组件初始化
+- Hook 设置
+- 状态同步
+- 自动同步定时器
+- 便捷 API
+- 事件处理
+- 初始化和清理
 
-```elisp
-;; Start an interactive agent chat
-(aiaos-cli-agent-chat)
-```
-
-## Testing
-
-Run the test suite:
-
-```elisp
-;; Load and run tests
-(require 'aiaos-cli-tests)
-(aiaos-cli-run-tests)
-```
-
-### Using Makefile
+## 安装
 
 ```bash
-# Compile all files
-make compile
+# 克隆项目
+git clone https://github.com/xBSDChina/aiaos-cli
+cd aiaos-cli/elisp
 
-# Run tests
-make test
-
-# Check code quality
-make check
-
-# Clean compiled files
-make clean
+# 在 Emacs 中加载
+(load-file "aiaos-cli-emacs-integration.el")
 ```
 
-## Development
+## 使用
 
-### Setup
+```elisp
+;; 加载集成层
+(require 'aiaos-cli-emacs-integration)
 
-```bash
-# Set up development environment
-make setup
+;; 获取所有缓冲区
+(aiaos-cli-emacs-integration-get-all-buffers)
 
-# Build the project
-make build
+;; 获取所有帧
+(aiaos-cli-emacs-integration-get-frames)
 
-# Run tests
-make test
+;; 插入文本
+(aiaos-cli-emacs-integration-insert-text "Hello, AIAOS!")
+
+;; 执行命令
+(aiaos-cli-emacs-integration-execute-command 'switch-to-buffer "*scratch*")
 ```
 
-### Code Style
+## 配置
 
-- Use `lexical-binding: t` at the top of all files
-- Use `defcustom` for user-configurable variables
-- Use `defgroup` for grouping related variables
-- Use `require` for dependencies
-- Use `cl-lib` for Common Lisp extensions
+```elisp
+;; 自定义配置
+(custom-set-variables
+ '(aiaos-cli-emacs-controller-auto-sync t)
+ '(aiaos-cli-emacs-controller-sync-interval 1000)
+ '(aiaos-cli-emacs-call-timeout 5000))
+```
 
-### Contributing
+## 贡献
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to the project.
+欢迎贡献代码！请遵循以下步骤：
 
-## Documentation
+1. Fork 项目
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -am 'Add some amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 开启 Pull Request
 
-- [Architecture](ARCHITECTURE.md) - Detailed architecture documentation
-- [Dependencies](DEPENDENCIES.md) - Dependency management
-- [Contributing](CONTRIBUTING.md) - Contribution guidelines
-- [Implementation Summary](IMPLEMENTATION-SUMMARY.md) - Implementation details
-- [Modules](MODULES.md) - Module documentation
-- [LLM Integration](README-AIAOS-LLM.md) - LLM integration guide
-- [Testing](TESTING.md) - Testing documentation
-- [API](API.md) - API documentation
-- [Examples](EXAMPLES.md) - Usage examples
-- [Skills](SKILLS.md) - Skills documentation
-- [Configuration](docs/CONFIGURATION.md) - Configuration guide
-- [Design](docs/DESIGN.md) - Design document
-- [Troubleshooting](docs/TROUBLESHOOTING.md) - Troubleshooting guide
+## 许可证
 
-## License
+MIT License - 详见 [LICENSE](LICENSE) 文件。
 
-MIT License - see [LICENSE](LICENSE) file for details.
+## 项目状态
 
-## Author
-
-AIAOS Project / xBSDChina
-
-## Links
-
-- GitHub: https://github.com/xBSDChina/aiaos-cli
-- Issue Tracker: https://github.com/xBSDChina/aiaos-cli/issues
+✅ 已完成所有核心功能的实现和测试。项目可以直接在 Emacs 环境中加载使用。

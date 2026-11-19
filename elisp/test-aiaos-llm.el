@@ -1,6 +1,7 @@
-;;; test-aiaos-llm.el --- LLM Provider 管理与 Fallback 机制测试
+;;; test-aiaos-llm.el --- LLM Provider 管理与 Fallback 机制测试  -*- lexical-binding: t; -*-
 
 (require 'aiaos-cli-llm)
+(require 'aiaos-cli)
 (require 'ert)
 
 ;;; 测试 Provider 管理
@@ -52,14 +53,28 @@
 
 (ert-deftest aiaos-llm-handle-error-test ()
   "Test error handling."
-  (let ((result (aiaos-llm-handle-error (error "Test error") nil)))
+  (let* ((err (condition-case e (error "Test error") (error e)))
+         (result (aiaos-llm-handle-error err nil)))
     (should (stringp result))
     (should (string-match "Error occurred" result))))
 
 (ert-deftest aiaos-llm-recover-from-error-test ()
   "Test error recovery."
   ;; Should not throw error even if recovery fails
-  (should (aiaos-llm-recover-from-error (error "Timeout: process killed after 120 seconds") nil)))
+  (let ((err (condition-case e (error "Timeout: process killed after 120 seconds") (error e))))
+    (should (aiaos-llm-recover-from-error err nil))))
+
+(ert-deftest aiaos-llm-recover-from-402-test ()
+  "Test 402 quota/billing error recovery triggers fallback chain."
+  ;; Should not throw error; should attempt provider switch
+  (let ((err (condition-case e (error "HTTP 402 - Payment/quota error, attempting provider fallback") (error e))))
+    (should (aiaos-llm-recover-from-error err nil))))
+
+(ert-deftest aiaos-cli-dialog-transient-error-p-402-test ()
+  "Test that 402 is detected as a transient error in dialog responses."
+  (should (aiaos-cli--dialog-transient-error-p "HTTP 402 Payment Required" "" 0))
+  (should (aiaos-cli--dialog-transient-error-p "" "quota exceeded" 0))
+  (should (aiaos-cli--dialog-transient-error-p "insufficient credits" "" 0)))
 
 ;;; 测试任务链
 

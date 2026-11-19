@@ -28,7 +28,7 @@
 (defcustom aiaos-cli-async-default-timeout 30
   "Default timeout for async operations in seconds."
   :type 'integer
-  :group 'aiaos-cli-async")
+  :group 'aiaos-cli-async)
 
 ;;; Async execution
 

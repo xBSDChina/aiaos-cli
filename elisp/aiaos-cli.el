@@ -50,6 +50,9 @@
 (require 'aiaos-cli-app)
 (require 'aiaos-cli-command)
 
+;; Emacs 双向交互集成模块（EMACS-INTEGRATION-SUMMARY.md）
+(require 'aiaos-cli-emacs)
+
 (defgroup aiaos-cli nil
   "AIAOS-CLI Emacs frontend."
   :group 'tools
@@ -458,6 +461,14 @@ R1210: 新增可选 LOAD-SKILLS 参数。为真时自动发现并加载所有未
         (define-key doctor-map "f" #'aiaos-cli-doctor-fix)
         (define-key doctor-map "r" #'aiaos-cli-doctor-report)
         (define-key map "d" doctor-map))
+      ;; R2026: Emacs integration submenu
+      (let ((emacs-map (make-sparse-keymap)))
+        (define-key emacs-map "s" #'aiaos-cli-emacs-show-status)
+        (define-key emacs-map "y" #'aiaos-cli-emacs-sync-now)
+        (define-key emacs-map "a" #'aiaos-cli-emacs-toggle-auto-sync)
+        (define-key emacs-map "p" #'aiaos-cli-emacs-show-perf)
+        (define-key emacs-map "c" #'aiaos-cli-emacs-check-permission-interactive)
+        (define-key map "e" emacs-map))
       (define-key map "l" #'aiaos-cli-log-tail)
       (define-key map "r" #'aiaos-cli-run)
       ;; R1325: TUI application entry (C-c a t)
@@ -504,7 +515,13 @@ R1210: 新增可选 LOAD-SKILLS 参数。为真时自动发现并加载所有未
                 (aiaos-cli--app-init)
               (error nil)))
         (message "aiaos-cli: warning - app module not available: %s" err))
-      (message "aiaos-cli: TUI modules loaded successfully"))
+      (message "aiaos-cli: TUI modules loaded successfully")
+  ;; Emacs 双向交互集成初始化（EMACS-INTEGRATION-SUMMARY.md）
+  (condition-case err
+      (progn
+        (aiaos-cli-emacs-init)
+        (message "aiaos-cli: Emacs integration initialized"))
+    (error (message "aiaos-cli: warning - Emacs integration init failed: %s" err))))
   ;; R1210: 可选自动加载已启用技能
   (when load-skills-flag
     (condition-case err

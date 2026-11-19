@@ -1,6 +1,7 @@
-;;; aiaos-cli-history.el - AIAOS-CLI 历史记录与上下文记忆增强
+;;; aiaos-cli-history.el - AIAOS-CLI 历史记录与上下文记忆增强  -*- lexical-binding: t; -*-
 ;;; 提供历史记录浏览、编辑、重新发送，以及跨 provider 的上下文记忆
 
+(require 'cl-lib)
 (require 'aiaos-cli-core)
 
 ;;; 配置
@@ -17,6 +18,9 @@
   "File for persistent history storage."
   :type 'string
   :group 'aiaos-history)
+
+(defvar aiaos-context-memory (make-hash-table :test 'equal)
+  "Global context memory hash table.")
 
 (defcustom aiaos-context-memory-enabled t
   "Enable context memory across provider switches."
@@ -98,7 +102,7 @@
                        (prin1-to-string (cdr (assq :message entry))))
                (current-buffer)))
       (princ ")" (current-buffer))
-      (write-file aiaos-history-file))))
+      (write-file aiaos-history-file)))))
 
 (defun aiaos-history-load ()
   "Load history from file."
@@ -111,8 +115,8 @@
               (dolist (pair data)
                 (push (list :message (cdr pair)
                            :timestamp (date-to-time (car pair))
-                           :provider (aiaos-get-config 'current-provider)))
-                     history-list)))
+                           :provider (aiaos-get-config 'current-provider))
+                      history-list)))
           (error nil)))
     (setq history-list nil)))
 

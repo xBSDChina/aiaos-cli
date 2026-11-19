@@ -28,31 +28,22 @@
 (defcustom aiaos-cli-cache-default-ttl 300
   "Default cache TTL in seconds."
   :type 'integer
-  :group 'aiaos-cli-cache")
+  :group 'aiaos-cli-cache)
 
-;; Cache structure
-(cl-defstruct aiaos-cli-cache-entry
-  "Cache entry."
+(cl-defstruct (aiaos-cli-cache-entry
+  (:constructor make-aiaos-cli-cache-entry)
+  (:copier copy-aiaos-cli-cache-entry))
   key value expiry)
 
-;; Cache storage
--var aiaos-cli-cache nil
-"Hash table for cache storage.")
-
-;;; Cache management
-
-(defun aiaos-cli-cache-init ()
-  "Initialize cache system."
-  (unless aiaos-cli-cache
-    (setq aiaos-cli-cache (make-hash-table :test 'equal))))
+(defconst aiaos-cli-cache (make-hash-table :test 'equal)
+  "Cache hash table.")
 
 (defun aiaos-cli-cache-get (key)
   "Get cached value for KEY."
   (let ((entry (gethash key aiaos-cli-cache)))
     (when entry
-      (if (aiaos-cli-cache-entry-expiry entry)
-          (if (> (aiaos-cli-cache-entry-expiry entry) (float-time))
-              (aiaos-cli-cache-entry-value entry)
+      (if (> (float-time) (aiaos-cli-cache-entry-expiry entry))
+          (progn
             (remhash key aiaos-cli-cache)
             nil)
         (aiaos-cli-cache-entry-value entry)))))
